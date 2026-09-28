@@ -88,7 +88,8 @@ def _filter(records: list[dict], **conds) -> list[dict]:
 def _time(value: str | None) -> pd.Timestamp:
     df = _forecasts()
     if value is None:
-        return pd.Timestamp(_json("manifest").get("default_issue_time") or df["timestamp"].max()).floor("h")
+        default = (_json("manifest").get("default_view") or {}).get("issue_time")
+        return pd.Timestamp(default or df["timestamp"].max()).floor("h")
     try:
         ts = pd.Timestamp(value).tz_localize(None).floor("h")
     except (ValueError, TypeError):

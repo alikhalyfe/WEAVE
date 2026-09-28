@@ -175,13 +175,14 @@ def build_extremes(ev: pd.DataFrame, scales: dict) -> dict:
     }
 
 
-def default_issue_time(ev: pd.DataFrame) -> str | None:
+def default_event(ev: pd.DataFrame) -> dict | None:
     """Dashboard opens on the most confident correctly-forecast heavy-rain event."""
     hits = ev[(ev["target_variable"] == "precipitation_mm") & (ev["lead_time_hours"] == 12)
               & ev["guidance_event"] & (ev["observed_event"] == True)]  # noqa: E712
     if hits.empty:
         return None
-    return str(hits.sort_values(["event_probability", "blended"]).iloc[-1]["timestamp"])
+    top = hits.sort_values(["event_probability", "blended"]).iloc[-1]
+    return {"issue_time": str(top["timestamp"]), "location": top["location"]}
 
 
 def run(retrain: bool = False) -> dict:
@@ -244,7 +245,7 @@ def run(retrain: bool = False) -> dict:
         "variables": config.TARGET_VARIABLES,
         "lead_times_hours": config.LEAD_TIMES_HOURS,
         "rows": len(ev),
-        "default_issue_time": default_issue_time(ev),
+        "default_view": default_event(ev),
         "headline_skill": headline,
     }
     for name, payload in {"manifest": manifest, "skill": skill, "weights": weights, "extremes": extremes}.items():

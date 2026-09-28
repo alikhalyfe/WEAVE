@@ -23,7 +23,7 @@ def client(tmp_path, monkeypatch):
     })
     df.to_csv(tmp_path / "forecasts.csv", index=False)
     manifest = {
-        "generated_at": "2026-01-01T00:00:00+00:00", "default_issue_time": "2025-07-03 06:00:00",
+        "generated_at": "2026-01-01T00:00:00+00:00", "default_view": {"issue_time": "2025-07-03 06:00:00", "location": "Pune"},
         "selected_methods": [{"target_variable": "temperature_2m_c", "lead_time_hours": 12, "config": "regime_bias", "method": "optimal"}],
     }
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
@@ -42,7 +42,7 @@ def client(tmp_path, monkeypatch):
 
 def test_health_and_meta(client):
     assert client.get("/api/health").json()["artifacts_ready"] is True
-    assert client.get("/api/meta").json()["default_issue_time"] == "2025-07-03 06:00:00"
+    assert client.get("/api/meta").json()["default_view"]["location"] == "Pune"
 
 
 def test_snapshot_defaults_to_manifest_issue_time(client):
