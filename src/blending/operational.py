@@ -64,8 +64,13 @@ METHODS = ("equal", "inverse_mae", "inverse_mse", "optimal")
 NONNEGATIVE_VARIABLES = {"precipitation_mm", "wind_speed_10m"}
 
 
-def group_weights(forecasts: np.ndarray, actual: np.ndarray, bias_correct: bool = True) -> dict:
-    """Bias and per-method weights for one condition group."""
+def forecast_columns(models: list[str]) -> list[str]:
+    return [f"{m}_forecast" for m in models]
+
+
+def group_weights(forecasts: np.ndarray, actual: np.ndarray, bias_correct: bool = True, models: list[str] = MODELS) -> dict:
+    """Bias and per-method weights for one condition group (columns of
+    `forecasts` follow `models`)."""
     bias = (forecasts - actual[:, None]).mean(axis=0) if bias_correct else np.zeros(forecasts.shape[1])
     corrected = forecasts - bias
     err = corrected - actual[:, None]
@@ -73,32 +78,33 @@ def group_weights(forecasts: np.ndarray, actual: np.ndarray, bias_correct: bool 
     mse = (err ** 2).mean(axis=0)
 
     per_method = {
-        "equal": np.full(len(MODELS), 1.0 / len(MODELS)),
-        "inverse_mae": np.array(list(calculate_weights(dict(zip(MODELS, mae))).values())),
-        "inverse_mse": np.array(list(calculate_weights(dict(zip(MODELS, mse))).values())),
+        "equal": np.full(len(models), 1.0 / len(models)),
+        "inverse_mae": np.array(list(calculate_weights(dict(zip(models, mae))).values())),
+        "inverse_mse": np.array(list(calculate_weights(dict(zip(models, mse))).values())),
         "optimal": optimal_weights(corrected, actual),
     }
     out = {"n": len(actual)}
-    out.update({f"bias_{m}": b for m, b in zip(MODELS, bias)})
-    out.update({f"mae_{m}": e for m, e in zip(MODELS, mae)})
+    out.update({f"bias_{m}": b for m, b in zip(models, bias)})
+    out.update({f"mae_{m}": e for m, e in zip(models, mae)})
     for method, w in per_method.items():
-        out.update({f"w_{method}_{m}": v for m, v in zip(MODELS, w)})
+        out.update({f"w_{method}_{m}": v for m, v in zip(models, w)})
     return out
 
 
-def skill_table(history: pd.DataFrame, keys: list[str], bias_correct: bool = True) -> pd.DataFrame:
+def skill_table(history: pd.DataFrame, keys: list[str], bias_correct: bool = True, models: list[str] = MODELS) -> pd.DataFrame:
     """group_weights for every (target_variable, lead_time_hours, *keys) group."""
     group_keys = BASE_KEYS + keys
+    cols = forecast_columns(models)
     rows = []
     for key, g in history.groupby(group_keys, sort=False):
-        stats = group_weights(g[FORECAST_COLUMNS].to_numpy(float), g["actual_value"].to_numpy(float), bias_correct)
+        stats = group_weights(g[cols].to_numpy(float), g["actual_value"].to_numpy(float), bias_correct, models)
         rows.append({**dict(zip(group_keys, key)), **stats})
     return pd.DataFrame(rows)
 
 
-def _param_columns() -> list[str]:
-    cols = ["n", *(f"bias_{m}" for m in MODELS), *(f"mae_{m}" for m in MODELS)]
-    return cols + [f"w_{method}_{m}" for method in METHODS for m in MODELS]
+def _param_columns(models: list[str]) -> list[str]:
+    cols = ["n", *(f"bias_{m}" for m in models), *(f"mae_{m}" for m in models)]
+    return cols + [f"w_{method}_{m}" for method in METHODS for m in models]
 
 
 def blend_rows(
@@ -106,14 +112,15 @@ def blend_rows(
     tables: dict[str, pd.DataFrame],
     min_samples: int = 50,
     levels: list[tuple[str, list[str]]] = LEVELS,
+    models: list[str] = MODELS,
 ) -> pd.DataFrame:
     """Attach the most specific usable weights to each row and blend."""
     n = len(rows)
-    params = {c: np.zeros(n) for c in _param_columns()}
+    params = {c: np.zeros(n) for c in _param_columns(models)}
     for method in METHODS:
-        for m in MODELS:
-            params[f"w_{method}_{m}"][:] = 1.0 / len(MODELS)
-    for m in MODELS:
+        for m in models:
+            params[f"w_{method}_{m}"][:] = 1.0 / len(models)
+    for m in models:
         params[f"mae_{m}"][:] = np.nan
     level = np.full(n, "equal_weights", dtype=object)
     assigned = np.zeros(n, dtype=bool)
@@ -133,13 +140,13 @@ def blend_rows(
         assigned |= ok
 
     out = rows.copy()
-    forecasts = out[FORECAST_COLUMNS].to_numpy(float) - np.column_stack([params[f"bias_{m}"] for m in MODELS])
+    forecasts = out[forecast_columns(models)].to_numpy(float) - np.column_stack([params[f"bias_{m}"] for m in models])
     available = ~np.isnan(forecasts)
     filled = np.where(available, forecasts, 0.0)
     nonneg = out["target_variable"].isin(NONNEGATIVE_VARIABLES).to_numpy()
 
     for method in METHODS:
-        w = np.column_stack([params[f"w_{method}_{m}"] for m in MODELS]) * available
+        w = np.column_stack([params[f"w_{method}_{m}"] for m in models]) * available
         total = w.sum(axis=1)
         blended = np.where(total > 0, (w * filled).sum(axis=1) / np.where(total > 0, total, 1), np.nan)
         out[f"blended_{method}"] = np.where(nonneg, np.clip(blended, 0, None), blended)
@@ -160,6 +167,7 @@ def run_rolling_blend(
     bias_correct: bool = True,
     history_days: int | None = None,
     levels: list[tuple[str, list[str]]] = LEVELS,
+    models: list[str] = MODELS,
 ) -> pd.DataFrame:
     """Blend every archived forecast issued in [start, end].
 
@@ -171,8 +179,9 @@ def run_rolling_blend(
     archive = archive.copy()
     archive["timestamp"] = pd.to_datetime(archive["timestamp"])
     archive["hour"] = archive["timestamp"].dt.hour
-    has_forecast = archive[FORECAST_COLUMNS].notna().any(axis=1)
-    verified = archive[archive[FORECAST_COLUMNS + ["actual_value"]].notna().all(axis=1)]
+    cols = forecast_columns(models)
+    has_forecast = archive[cols].notna().any(axis=1)
+    verified = archive[archive[cols + ["actual_value"]].notna().all(axis=1)]
     target_time = verified["timestamp"] + pd.to_timedelta(verified["lead_time_hours"], unit="h")
 
     edges = list(pd.date_range(pd.Timestamp(start).to_period("M").start_time, end, freq=freq))
@@ -187,8 +196,8 @@ def run_rolling_blend(
         history = verified[target_time < p_start]
         if history_days is not None:
             history = history[history["timestamp"] >= p_start - pd.Timedelta(days=history_days)]
-        tables = {name: skill_table(history, keys, bias_correct) for name, keys in levels} if len(history) else {}
-        block = blend_rows(rows.reset_index(drop=True), tables, min_samples, levels)
+        tables = {name: skill_table(history, keys, bias_correct, models) for name, keys in levels} if len(history) else {}
+        block = blend_rows(rows.reset_index(drop=True), tables, min_samples, levels, models)
         block["weights_updated_at"] = p_start
         blocks.append(block)
 
