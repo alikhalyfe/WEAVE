@@ -1,16 +1,26 @@
-# React + Vite
+# WEAVE dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React 19 + Vite. All data comes from the WEAVE API (`src/api/main.py`); there is no mock data.
 
-Currently, two official plugins are available:
+```bash
+npm install
+npm run dev      # http://localhost:5173, proxies /api -> http://127.0.0.1:8000
+npm run build    # dist/ is then served by the API itself at /
+npm run lint
+```
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Start the API first, from the repo root: `python -m src.workflow` (once), then `uvicorn src.api.main:app`.
 
-## React Compiler
+| Panel | Source |
+|---|---|
+| Forecast cards, weight map donuts, alerts | `GET /api/snapshot` |
+| Forecast comparison chart | `GET /api/series` |
+| Year timeline | `GET /api/daily` |
+| Forecast skill | `GET /api/skill` |
+| Weight grid | `GET /api/weights` |
+| Extreme event skill | `GET /api/extremes` |
+| Blend new forecasts | `POST /api/blend` |
+| Workflow | `GET /api/meta` |
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+The selection (location, variable, lead, issue time) lives in the URL, so any view can be shared as a link.
+Charts are hand-built SVG with no chart library. Series colours come from a CVD-validated categorical palette, and every chart has a legend and a table view.
