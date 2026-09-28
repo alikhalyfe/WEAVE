@@ -60,7 +60,7 @@ CONFIGS = {
     "regime_bias": {"levels": LEVELS, "bias_correct": True},
     "diurnal_bias": {"levels": DIURNAL_LEVELS + LEVELS, "bias_correct": True},
 }
-METHODS = ("equal", "inverse_mae", "inverse_mse", "optimal")
+METHODS = ("equal", "inverse_mae", "inverse_mse", "optimal", "best_member")
 NONNEGATIVE_VARIABLES = {"precipitation_mm", "wind_speed_10m"}
 
 
@@ -82,6 +82,9 @@ def group_weights(forecasts: np.ndarray, actual: np.ndarray, bias_correct: bool 
         "inverse_mae": np.array(list(calculate_weights(dict(zip(models, mae))).values())),
         "inverse_mse": np.array(list(calculate_weights(dict(zip(models, mse))).values())),
         "optimal": optimal_weights(corrected, actual),
+        # Degenerate "blend": all weight on the historically best member. Lets
+        # selection fall back to one model when combining doesn't help.
+        "best_member": np.eye(len(models))[int(np.argmin(mae))],
     }
     out = {"n": len(actual)}
     out.update({f"bias_{m}": b for m, b in zip(models, bias)})
