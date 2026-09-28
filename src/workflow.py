@@ -32,6 +32,7 @@ from src.evaluation.skill import add_skill_scores, skill_table
 from src.regime.classifier import build_regimes, training_thresholds
 
 ARTIFACTS_DIR = config.PROCESSED_DIR / "artifacts"
+PUBLISHED_DIR = config.DATA_DIR / "artifacts"
 MODEL_LABELS = {
     "model_a": "Persistence",
     "model_b": "Random Forest",
@@ -248,8 +249,16 @@ def run(retrain: bool = False) -> dict:
         "default_view": default_event(ev),
         "headline_skill": headline,
     }
-    for name, payload in {"manifest": manifest, "skill": skill, "weights": weights, "extremes": extremes}.items():
+    payloads = {"manifest": manifest, "skill": skill, "weights": weights, "extremes": extremes}
+    for name, payload in payloads.items():
         (ARTIFACTS_DIR / f"{name}.json").write_text(json.dumps(payload, indent=1, default=str))
+
+    # Compact, git-tracked copy so a deployed API can serve the historical
+    # replay without retraining (data/processed/ is gitignored).
+    PUBLISHED_DIR.mkdir(parents=True, exist_ok=True)
+    ev[export_cols].to_csv(PUBLISHED_DIR / "forecasts.csv.gz", index=False, float_format="%.4f", compression="gzip")
+    for name, payload in payloads.items():
+        (PUBLISHED_DIR / f"{name}.json").write_text(json.dumps(payload, default=str))
 
     print_summary(skill, extremes, selection)
     _log(f"Done in {time.time() - t0:.0f}s -> {ARTIFACTS_DIR}")

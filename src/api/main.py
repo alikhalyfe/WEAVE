@@ -20,20 +20,32 @@ import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from src.blending.operational import CONFIGS, METHODS, MODELS, blend_rows, skill_table
 from src.data_pipeline import config
+from src.live import openmeteo, service
 
-ARTIFACTS_DIR = Path(os.environ.get("WEAVE_ARTIFACTS_DIR", config.PROCESSED_DIR / "artifacts"))
+
+def _default_artifacts_dir() -> Path:
+    """Freshly generated artifacts if present, else the committed export."""
+    local = config.PROCESSED_DIR / "artifacts"
+    return local if (local / "manifest.json").exists() else config.DATA_DIR / "artifacts"
+
+
+ARTIFACTS_DIR = Path(os.environ.get("WEAVE_ARTIFACTS_DIR", _default_artifacts_dir()))
 FRONTEND_DIST = config.REPO_ROOT / "frontend" / "dist"
+ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+INDIA_BOUNDS = {"lat": (6.0, 37.5), "lon": (68.0, 97.5)}
+ATTRIBUTION = ("Weather data by Open-Meteo.com (CC BY 4.0): ECMWF IFS & AIFS, NOAA NCEP GFS, DWD ICON; "
+               "ERA5 reanalysis, Copernicus Climate Change Service.")
 
 Variable = Literal["temperature_2m_c", "precipitation_mm", "wind_speed_10m"]
 MEMBER_COLS = [f"{m}_forecast" for m in MODELS]
 
-app = FastAPI(title="WEAVE adaptive forecast blending API", version="1.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="WEAVE adaptive forecast blending API", version="2.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"])
 
 
 def _require(name: str) -> Path:
@@ -50,7 +62,8 @@ def _json(name: str) -> dict:
 
 @lru_cache
 def _forecasts() -> pd.DataFrame:
-    df = pd.read_csv(_require("forecasts.csv"), parse_dates=["timestamp"])
+    name = "forecasts.csv" if (ARTIFACTS_DIR / "forecasts.csv").exists() else "forecasts.csv.gz"
+    df = pd.read_csv(_require(name), parse_dates=["timestamp"])
     df["valid_time"] = df["timestamp"] + pd.to_timedelta(df["lead_time_hours"], unit="h")
     return df.sort_values(["location", "target_variable", "lead_time_hours", "timestamp"]).reset_index(drop=True)
 
@@ -223,5 +236,51 @@ def blend(req: BlendRequest):
     })
 
 
+# ---- Live mode (Open-Meteo) ----
+
+def _live_call(fn, *args):
+    try:
+        return fn(*args)
+    except openmeteo.OpenMeteoError as exc:
+        raise HTTPException(502, f"Upstream weather data unavailable: {exc}")
+
+
+@app.get("/api/live/search")
+def live_search(q: str = Query(min_length=2, max_length=80)):
+    """Places in India matching q (Open-Meteo geocoding)."""
+    return {"results": _live_call(openmeteo.search, q), "attribution": ATTRIBUTION}
+
+
+@app.get("/api/live/forecast")
+def live_forecast(lat: float, lon: float, name: str = Query("Selected place", max_length=120)):
+    """Adaptive blend of ECMWF IFS, NCEP GFS, DWD ICON and ECMWF AIFS for
+    the next ~7 days, with weights learned from this place's verified history."""
+    if not (INDIA_BOUNDS["lat"][0] <= lat <= INDIA_BOUNDS["lat"][1] and INDIA_BOUNDS["lon"][0] <= lon <= INDIA_BOUNDS["lon"][1]):
+        raise HTTPException(422, "Live mode covers India only.")
+    payload = _live_call(service.forecast, name, lat, lon)
+    return _clean({**payload, "attribution": ATTRIBUTION})
+
+
+@app.get("/api/live/cities")
+def live_cities():
+    """Tracked cities with headline blended values and alerts. Cities still
+    computing are reported as pending, never filled in."""
+    return _clean({**service.overview(), "attribution": ATTRIBUTION})
+
+
+@app.get("/api/live/models")
+def live_models():
+    return {"models": openmeteo.LIVE_MODELS, "runs": _live_call(openmeteo.model_runs), "attribution": ATTRIBUTION}
+
+
+# ---- Frontend (single-page app) ----
+
 if FRONTEND_DIST.exists():
-    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+    @app.get("/{path:path}", include_in_schema=False)
+    def spa(path: str):
+        if path.startswith("api/"):
+            raise HTTPException(404)
+        file = (FRONTEND_DIST / path).resolve()
+        if path and file.is_file() and FRONTEND_DIST.resolve() in file.parents:
+            return FileResponse(file)
+        return FileResponse(FRONTEND_DIST / "index.html")
