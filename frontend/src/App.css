@@ -362,7 +362,7 @@
   white-space: nowrap;
 }
 
-.forecast-card__reading span {
+.forecast-card__reading > span {
   color: #718096;
   font: 500 11px/1.2 var(--mono);
 }

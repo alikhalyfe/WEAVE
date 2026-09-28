@@ -9,7 +9,7 @@ import Header from "../components/Header";
 import LiveBlend from "../components/LiveBlend";
 import ModelWeights from "../components/ModelWeights";
 import PerformanceCard from "../components/PerformanceCard";
-import Sidebar from "../components/Sidebar";
+import { Page } from "../components/Motion";
 import WeatherRegime from "../components/WeatherRegime";
 import WeightMap from "../components/WeightMap";
 import WorkflowCard from "../components/WorkflowCard";
@@ -27,7 +27,8 @@ function readUrl() {
   };
 }
 
-function Dashboard() {
+/** The 2025 research replay: 3 ML members at 5 Maharashtra ERA5 points. */
+function HistoricalPage() {
   const [sel, setSel] = useState(readUrl);
   const meta = useApi("/meta");
   const m = meta.data;
@@ -39,7 +40,7 @@ function Dashboard() {
   const ready = Boolean(m && location && time);
 
   useEffect(() => {
-    if (ready) window.history.replaceState(null, "", qs({ location, variable, lead, time }));
+    if (ready) window.history.replaceState(window.history.state, "", "/historical" + qs({ location, variable, lead, time }));
   }, [ready, location, variable, lead, time]);
 
   const snapshot = useApi(ready ? "/snapshot" + qs({ time, lead }) : null);
@@ -59,11 +60,14 @@ function Dashboard() {
   const validTime = snapshot.data?.valid_time;
 
   return (
-    <div className="app-shell">
-      <Sidebar status={status} />
-      <div className="main-column">
+    <>
         <Header meta={m} location={location} variable={variable} lead={lead} time={time} onChange={update} status={status} />
-        <main className="dashboard-content" id="overview">
+        <Page>
+          <div className="banner banner--info">
+            <span className="material-symbols-outlined" aria-hidden="true">history</span>
+            <div><strong>Historical replay, not live.</strong> A research experiment: Persistence, Random Forest and gradient-boosting members
+              trained on 2021–2024 ERA5 and verified on every hour of 2025 at 5 Maharashtra sites. For today’s forecasts use the Live pages.</div>
+          </div>
           {meta.error && (
             <div className="banner banner--error" role="alert">
               <span className="material-symbols-outlined" aria-hidden="true">cloud_off</span>
@@ -135,14 +139,9 @@ function Dashboard() {
             </>
           )}
 
-          <footer className="dashboard-footer">
-            <span><i /> WEAVE · adaptive AI–NWP forecast blending</span>
-            <span>ERA5 reanalysis · 5 Maharashtra locations · models verified out-of-sample on 2025</span>
-          </footer>
-        </main>
-      </div>
-    </div>
+        </Page>
+    </>
   );
 }
 
-export default Dashboard;
+export default HistoricalPage;

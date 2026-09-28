@@ -1,41 +1,64 @@
-const links = [
-  { label: "Overview", icon: "grid_view", href: "#overview" },
-  { label: "Forecast", icon: "trending_up", href: "#forecast" },
-  { label: "Model Weights", icon: "tune", href: "#weights" },
-  { label: "Weight Map", icon: "map", href: "#weight-map" },
-  { label: "Performance", icon: "analytics", href: "#performance" },
-  { label: "Extreme Events", icon: "warning", href: "#extreme-events" },
-  { label: "Blend New Data", icon: "bolt", href: "#live-blend" },
-  { label: "Workflow", icon: "settings_suggest", href: "#workflow" },
+import { motion } from "motion/react";
+import { NavLink } from "react-router-dom";
+
+const GROUPS = [
+  {
+    label: "Live · India",
+    links: [
+      { to: "/", label: "Overview", icon: "public", end: true },
+      { to: "/forecast", label: "Forecast", icon: "trending_up" },
+      { to: "/weights", label: "Model Weights", icon: "tune" },
+      { to: "/performance", label: "Performance", icon: "analytics" },
+      { to: "/extremes", label: "Extreme Events", icon: "warning" },
+    ],
+  },
+  {
+    label: "Research",
+    links: [
+      { to: "/historical", label: "2025 Replay", icon: "history" },
+      { to: "/blend", label: "Blend Tool", icon: "bolt" },
+      { to: "/about", label: "Method & Data", icon: "info" },
+    ],
+  },
 ];
 
-function Sidebar({ status }) {
+function Sidebar() {
   return (
     <aside className="sidebar">
       <div>
-        <a className="brand" href="#overview" aria-label="WEAVE dashboard overview">
+        <NavLink className="brand" to="/" aria-label="WEAVE overview">
           <span className="brand__mark">W</span>
           <span className="brand__copy">
             <strong>WEAVE</strong>
             <span>Adaptive Weather<br />Forecast Blending</span>
           </span>
-        </a>
+        </NavLink>
 
-        <div className="sidebar__label">Workspace</div>
-        <nav className="sidebar__nav" aria-label="Main navigation">
-          {links.map((link) => (
-            <a href={link.href} className="sidebar__link" key={link.label}>
-              <span className="material-symbols-outlined" aria-hidden="true">{link.icon}</span>
-              <span>{link.label}</span>
-            </a>
-          ))}
-        </nav>
+        {GROUPS.map((g) => (
+          <div key={g.label}>
+            <div className="sidebar__label">{g.label}</div>
+            <nav className="sidebar__nav" aria-label={g.label}>
+              {g.links.map((link) => (
+                <NavLink key={link.to} to={link.to} end={link.end}
+                  className={({ isActive }) => "sidebar__link" + (isActive ? " is-active" : "")}>
+                  {({ isActive }) => (
+                    <>
+                      {isActive && <motion.span layoutId="nav-active" className="sidebar__pill" transition={{ type: "spring", stiffness: 500, damping: 40 }} />}
+                      <span className="material-symbols-outlined" aria-hidden="true">{link.icon}</span>
+                      <span>{link.label}</span>
+                    </>
+                  )}
+                </NavLink>
+              ))}
+            </nav>
+          </div>
+        ))}
       </div>
 
       <div className="sidebar__footer">
-        <span className={"online-dot" + (status === "online" ? "" : " is-off")} />
-        <span>{status === "online" ? "Live data" : "No data"}</span>
-        <span className="sidebar__footer-tag">ERA5 · 2025</span>
+        <span className="online-dot" />
+        <span>Open-Meteo · ERA5</span>
+        <span className="sidebar__footer-tag">CC BY 4.0</span>
       </div>
     </aside>
   );

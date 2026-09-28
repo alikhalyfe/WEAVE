@@ -7,8 +7,8 @@ function Header({ meta, location, variable, lead, time, onChange, status }) {
   return (
     <header className="topbar">
       <div className="topbar__title">
-        <span className="topbar__eyebrow">WEAVE / ADAPTIVE AI–NWP BLENDING</span>
-        <h1>Weather Forecast Intelligence</h1>
+        <span className="topbar__eyebrow">RESEARCH / 2025 REPLAY · 5 MAHARASHTRA SITES</span>
+        <h1>Historical verification</h1>
       </div>
 
       <div className="topbar__controls">

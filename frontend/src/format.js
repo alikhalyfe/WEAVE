@@ -10,6 +10,17 @@ export const BLEND = { key: "blended", label: "Adaptive blend", color: "#4a3aa7"
 export const OBSERVED = { key: "actual_value", label: "Observed (ERA5)", color: "#0f172a" };
 export const MODEL_BY_KEY = Object.fromEntries(MODELS.map((m) => [m.key, m]));
 
+// Live members (Open-Meteo). Same validated slot order, plus slot 4 (yellow):
+// blue, orange, aqua, yellow, violet blend -- adjacent CVD dE >= 9.1.
+// Aqua and yellow are < 3:1 on white, so every chart keeps a legend + table.
+export const LIVE_MODELS = [
+  { key: "ecmwf_ifs", label: "ECMWF IFS", short: "IFS", kind: "NWP", color: "#2a78d6" },
+  { key: "gfs", label: "NCEP GFS", short: "GFS", kind: "NWP", color: "#eb6834" },
+  { key: "icon", label: "DWD ICON", short: "ICON", kind: "NWP", color: "#1baf7a" },
+  { key: "aifs", label: "ECMWF AIFS", short: "AIFS", kind: "AI", color: "#eda100" },
+];
+export const LIVE_MODEL_BY_KEY = Object.fromEntries(LIVE_MODELS.map((m) => [m.key, m]));
+
 export const VARIABLES = {
   precipitation_mm: { label: "Rainfall", unit: "mm/h", icon: "water_drop", accent: "blue", digits: 2, event: "Heavy rainfall" },
   temperature_2m_c: { label: "Temperature", unit: "°C", icon: "thermostat", accent: "amber", digits: 1, event: "Heat" },
@@ -33,6 +44,7 @@ export const METHOD_LABELS = {
   inverse_mae: "Inverse MAE",
   inverse_mse: "Inverse MSE",
   optimal: "Optimal (NNLS stacking)",
+  best_member: "Best single model",
 };
 
 export const CONFIG_LABELS = {
@@ -63,3 +75,36 @@ export const fmtDay = (iso) => {
   return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
 };
 export const MONTH_NAMES = MONTHS;
+
+// Live pages show Indian Standard Time; the API speaks UTC.
+const IST_MS = 5.5 * 3600e3;
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+export function fmtIST(iso, { weekday = false, date = true } = {}) {
+  if (!iso) return "—";
+  const d = new Date(toDate(iso).getTime() + IST_MS);
+  const hh = `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+  if (!date) return hh;
+  return `${weekday ? DAYS[d.getUTCDay()] + " " : ""}${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}, ${hh}`;
+}
+export const istHour = (iso) => new Date(toDate(iso).getTime() + IST_MS).getUTCHours();
+
+/** "5 min ago" style age of a UTC ISO timestamp. */
+export function ago(iso) {
+  if (!iso) return "—";
+  const mins = Math.round((Date.now() - toDate(iso).getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const h = Math.round(mins / 60);
+  return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
+}
+
+export const severityOf = (p) => (p >= 0.66 ? "high" : p >= 0.33 ? "moderate" : "low");
+
+/** "Thu 1 Oct" for an ISO date (YYYY-MM-DD). */
+export const fmtDate = (d) => {
+  const x = new Date(d + "T00:00:00Z");
+  return `${DAYS[x.getUTCDay()]} ${x.getUTCDate()} ${MONTHS[x.getUTCMonth()]}`;
+};
+
+export const slug = (name) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+export const placeUrl = (p) => `/forecast?${new URLSearchParams({ name: p.name, lat: p.latitude.toFixed(4), lon: p.longitude.toFixed(4), ...(p.state ? { state: p.state } : {}) })}`;
