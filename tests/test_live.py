@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import httpx
 import numpy as np
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
@@ -60,6 +61,14 @@ def handler(request: httpx.Request) -> httpx.Response:
         ]})
     if request.url.path.endswith("meta.json"):
         return httpx.Response(200, json={"last_run_initialisation_time": 1790000000, "last_run_availability_time": 1790010000})
+    if host.startswith("archive") and "daily" in q:
+        days = np.arange(np.datetime64(q["start_date"]), np.datetime64(q["end_date"]) + np.timedelta64(1, "D"))
+        daily = {"time": [str(d) for d in days]}
+        noon = days.astype("datetime64[h]") + np.timedelta64(12, "h")
+        for v in q["daily"].split(","):
+            base = {"temperature_2m_max": "temperature_2m", "precipitation_sum": "precipitation", "wind_speed_10m_max": "wind_speed_10m"}[v]
+            daily[v] = [round(float(x), 2) for x in _truth(base, noon) * (24 if base == "precipitation" else 1)]
+        return httpx.Response(200, json={"daily": daily})
     hourly_vars = q["hourly"].split(",")
     if host.startswith("archive"):
         times = _times(q["start_date"], q["end_date"])
@@ -122,6 +131,16 @@ def test_responses_are_cached():
     assert handler.calls.count("geocoding-api.open-meteo.com") == 1
 
 
+def test_daily_thresholds_use_a_day_of_year_window():
+    dates = pd.date_range("2024-01-01", "2025-12-31", freq="D")
+    clim = pd.DataFrame({"date": dates, "temperature_2m_c": dates.dayofyear.astype(float),
+                         "precipitation_mm": 5.0, "wind_speed_10m": 3.0})
+    thr = engine.daily_thresholds(clim).set_index("doy")
+    # temperature equals day-of-year, so the p95 of a +-15-day window sits near doy + 13
+    assert 160 < thr.loc[150, "temperature_2m_c"] < 166
+    assert thr.loc[150, "precipitation_mm"] == 5.0
+
+
 def test_live_forecast_learns_member_skill_and_verifies_out_of_sample():
     r = engine.live_forecast("Pune", 18.52, 73.86)
     temp = r["variables"]["temperature_2m_c"]
@@ -138,8 +157,9 @@ def test_live_forecast_learns_member_skill_and_verifies_out_of_sample():
     assert skill[(1, "blended")] <= skill[(1, "ecmwf_ifs")] * 1.05
     assert all(s["n"] > 0 for s in temp["skill"])
 
-    for p in temp["points"]:
-        assert p["event_probability"] is None or 0 <= p["event_probability"] <= 1
+    assert temp["days"] and all(d["probability"] is None or 0 <= d["probability"] <= 1 for d in temp["days"])
+    assert all(d["threshold"] is not None for d in temp["days"])
+    assert sum(d["hours"] for d in temp["days"]) == len(temp["points"])
     assert r["truth_available_until"] < r["issued_at"]
 
 

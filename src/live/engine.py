@@ -19,9 +19,12 @@ For one place:
    Skill state is cached for SKILL_TTL; hourly refreshes only re-blend.
 4. Blend the members' latest run with those weights. Lead day for a valid
    time = floor(hours ahead / 24), matching Open-Meteo's previous_dayN.
-5. Extremes: event = value >= the place's location x season p95 from the
-   last 12 months of ERA5. Event probability = skill-weighted share of (bias-corrected)
-   members at/above it. Evaluate-window POD/FAR/CSI are reported alongside.
+5. Extremes are judged per IST calendar day, like heat-wave and heavy-rain
+   days: daily max temperature, daily rain total and daily max wind against
+   the 95th percentile of the same +-15 days of year in the place's last 2
+   years of ERA5 (rain: p95 of wet days >= 1 mm). Event probability is the
+   skill-weighted share of (bias-corrected) members reaching it; the
+   evaluate window gives POD/FAR/CSI for the same rule.
 
 Nothing is fabricated: missing members are dropped and renormalised,
 unpublished truth is simply absent, and every output carries timestamps.
@@ -41,22 +44,26 @@ from src.data_pipeline.config import MONTH_TO_SEASON
 from src.evaluation.extreme_events import event_metrics
 from src.live import openmeteo
 from src.live.openmeteo import LIVE_MODELS, MODEL_KEYS, VARIABLES
-from src.regime.classifier import THRESHOLD_COLUMNS, classify, training_thresholds
+from src.regime.classifier import classify, training_thresholds
 
 HISTORY_DAYS = 120
 HOLDOUT_DAYS = 21
 TRUTH_LOOKBACK_DAYS = 135
 SKILL_TTL = 24 * 3600
-CLIMATE_DAYS = 365
 MIN_COVERAGE = 0.8
 MIN_SAMPLES = 50
+CLIMATE_DAYS = 730
+WINDOW_DAYS = 15
+WET_DAY_MM = 1.0
+IST = pd.Timedelta(hours=5, minutes=30)
+DAILY_AGG = {"temperature_2m_c": "max", "precipitation_mm": "sum", "wind_speed_10m": "max"}
 
 
 def _utc_now() -> pd.Timestamp:
     return pd.Timestamp.now(tz="UTC").tz_localize(None).floor("h")
 
 
-def _add_context(df: pd.DataFrame, name: str, thresholds: pd.DataFrame, value_cols: list[str]) -> pd.DataFrame:
+def _add_context(df: pd.DataFrame, name: str, regime_thresholds: pd.DataFrame, value_cols: list[str]) -> pd.DataFrame:
     """location / season / hour, and the regime the member-mean forecast
     implies (known at issue time, so usable for both history and live)."""
     df = df.copy()
@@ -70,34 +77,61 @@ def _add_context(df: pd.DataFrame, name: str, thresholds: pd.DataFrame, value_co
     for var in VARIABLES:
         if var not in wide:
             wide[var] = np.nan
-    wide["weather_regime"] = classify(wide, thresholds)
+    wide["weather_regime"] = classify(wide, regime_thresholds)
     return df.merge(wide[[*keys, "weather_regime"]], on=keys, how="left")
 
 
-def climatology(name: str, lat: float, lon: float) -> pd.DataFrame:
-    """location x season p95 thresholds from the last 12 months of ERA5 at
-    this place (12 months keeps the request cheap under Open-Meteo's fair-use
-    accounting; every season is covered once)."""
+def daily_thresholds(clim: pd.DataFrame) -> pd.DataFrame:
+    """p95 per day-of-year (1-366) from a +-WINDOW_DAYS circular window over
+    every year in `clim` (daily ERA5). Rain uses wet days only, falling back
+    to the whole record's wet days when the window has fewer than 10."""
+    doy = clim["date"].dt.dayofyear.to_numpy()
+    out = {"doy": np.arange(1, 367)}
+    all_wet = clim.loc[clim["precipitation_mm"] >= WET_DAY_MM, "precipitation_mm"]
+    for var in DAILY_AGG:
+        values = clim[var].to_numpy()
+        col = []
+        for d in out["doy"]:
+            dist = np.abs(doy - d)
+            in_window = np.minimum(dist, 366 - dist) <= WINDOW_DAYS
+            v = values[in_window]
+            if var == "precipitation_mm":
+                v = v[v >= WET_DAY_MM]
+                if len(v) < 10:
+                    v = all_wet.to_numpy()
+            col.append(float(np.quantile(v, 0.95)) if len(v) else np.nan)
+        out[var] = col
+    return pd.DataFrame(out)
+
+
+def climatology(lat: float, lon: float) -> pd.DataFrame:
+    """Day-of-year event thresholds from the last 2 years of daily ERA5."""
     end = _utc_now().date() - timedelta(days=7)  # ERA5 publication lag
-    end = end.replace(day=1) - timedelta(days=1)  # whole months only, so the cache key is stable for weeks
-    clim, _ = openmeteo.era5(lat, lon, end - timedelta(days=CLIMATE_DAYS - 1), end, kind="climatology")
-    clim["location"] = name
-    clim["season"] = clim["timestamp"].dt.month.map(MONTH_TO_SEASON)
-    return training_thresholds(clim, calibration_end=pd.Timestamp(end) + pd.Timedelta(days=1))
+    end = end.replace(day=1) - timedelta(days=1)  # whole months: stable cache key for weeks
+    clim, _ = openmeteo.era5_daily(lat, lon, end - timedelta(days=CLIMATE_DAYS - 1), end)
+    if clim.empty:
+        raise openmeteo.OpenMeteoError("ERA5 climatology unavailable for this place.")
+    return daily_thresholds(clim)
 
 
-def _history(name: str, lat: float, lon: float, thresholds: pd.DataFrame) -> tuple[pd.DataFrame, pd.Timestamp]:
+def _history(name: str, lat: float, lon: float) -> tuple[pd.DataFrame, pd.DataFrame, pd.Timestamp, pd.DataFrame]:
+    """(history with context, hourly regime thresholds, last obs time, truth)."""
     today = _utc_now().date()
     truth, _ = openmeteo.era5(lat, lon, today - timedelta(days=TRUTH_LOOKBACK_DAYS), today)
     if truth.empty:
         raise openmeteo.OpenMeteoError("ERA5 returned no observations for this place.")
     last_obs = truth["timestamp"].max()
+    # Regime thresholds (a conditioning key for the weights) come from the
+    # truth already fetched: seasonal hourly p95 over the lookback window.
+    regime_thr = training_thresholds(
+        truth.assign(location=name, season=truth["timestamp"].dt.month.map(MONTH_TO_SEASON)),
+        calibration_end=last_obs + pd.Timedelta(hours=1))
     start = (last_obs - pd.Timedelta(days=HISTORY_DAYS)).date()
     prev, _ = openmeteo.previous_runs(lat, lon, start, last_obs.date())
     truth_long = truth.melt(id_vars="timestamp", var_name="target_variable", value_name="actual_value")
     hist = prev.merge(truth_long, on=["timestamp", "target_variable"], how="inner")
     hist = hist[hist["timestamp"] >= last_obs - pd.Timedelta(days=HISTORY_DAYS)]
-    return _add_context(hist, name, thresholds, forecast_columns(MODEL_KEYS)), last_obs
+    return _add_context(hist, name, regime_thr, forecast_columns(MODEL_KEYS)), regime_thr, last_obs, truth
 
 
 def _mae(pred, actual) -> float:
@@ -151,18 +185,33 @@ def _fit_group(hist: pd.DataFrame, models: list[str], select_start: pd.Timestamp
     return {"config": cfg, "method": method, "skill": skill, "evaluation": evaluation, "tables": _tables(hist, cfg, models)}
 
 
+def _ist_date(ts: pd.Series) -> pd.Series:
+    return (ts + IST).dt.normalize()
+
+
+def _threshold_for(dates: pd.Series, thresholds: pd.DataFrame, var: str) -> np.ndarray:
+    return thresholds.set_index("doy")[var].reindex(dates.dt.dayofyear).to_numpy()
+
+
 def _event_verification(evaluation: pd.DataFrame | None, thresholds: pd.DataFrame, var: str) -> dict | None:
-    """Blend >= p95 as the event forecast, scored on the evaluate window."""
+    """Daily rule (blend daily aggregate >= day-of-year p95) scored against
+    ERA5 daily aggregates on complete IST days of the evaluate window."""
     if evaluation is None or evaluation.empty:
         return None
-    thr = evaluation[["season"]].merge(thresholds, on="season", how="left")[THRESHOLD_COLUMNS[var]].to_numpy()
-    observed = evaluation["actual_value"].to_numpy() >= thr
-    forecast = evaluation["blended"].to_numpy() >= thr
+    e = evaluation.assign(date=_ist_date(evaluation["timestamp"]))
+    daily = e.groupby("date").agg(hours=("actual_value", "size"), blended=("blended", DAILY_AGG[var]),
+                                  actual=("actual_value", DAILY_AGG[var])).reset_index()
+    daily = daily[daily["hours"] == 24]
+    if daily.empty:
+        return None
+    thr = _threshold_for(daily["date"], thresholds, var)
+    observed = daily["actual"].to_numpy() >= thr
+    forecast = daily["blended"].to_numpy() >= thr
     m = event_metrics(observed, forecast)
-    return {"observed_events": int(observed.sum()), "forecast_events": int(forecast.sum()),
+    return {"days": len(daily), "observed_events": int(observed.sum()), "forecast_events": int(forecast.sum()),
             "pod": float(m["recall"]) if observed.any() else None,
             "far": float(1 - m["precision"]) if forecast.any() else None,
-            "csi": float(m["csi"]) if (observed.any() or forecast.any()) else None, "n": len(evaluation)}
+            "csi": float(m["csi"]) if (observed.any() or forecast.any()) else None}
 
 
 _skill_cache: dict[tuple, tuple[float, dict]] = {}
@@ -181,8 +230,8 @@ def skill_state(name: str, lat: float, lon: float) -> dict:
         if hit and time.time() - hit[0] < SKILL_TTL:
             return hit[1]
 
-        thresholds = climatology(name, lat, lon).drop(columns="location")
-        hist, last_obs = _history(name, lat, lon, thresholds.assign(location=name))
+        thresholds = climatology(lat, lon)
+        hist, regime_thr, last_obs, _ = _history(name, lat, lon)
         eval_start = last_obs - pd.Timedelta(days=HOLDOUT_DAYS)
         select_start = eval_start - pd.Timedelta(days=HOLDOUT_DAYS)
 
@@ -194,7 +243,8 @@ def skill_state(name: str, lat: float, lon: float) -> dict:
                 g["models"] = models
                 g["event_verification"] = _event_verification(g["evaluation"], thresholds, var)
                 groups[(var, int(lead))] = g
-        state = {"thresholds": thresholds, "groups": groups, "last_obs": last_obs, "computed_at": time.time()}
+        state = {"thresholds": thresholds, "regime_thresholds": regime_thr, "groups": groups,
+                 "last_obs": last_obs, "computed_at": time.time()}
         _skill_cache[key] = (time.time(), state)
         return state
 
@@ -210,7 +260,7 @@ def live_forecast(name: str, lat: float, lon: float) -> dict:
     hours = (fc["timestamp"] - now) / pd.Timedelta(hours=1)
     fc["lead_time_hours"] = 24 * np.minimum(hours // 24, 7).astype(int)
     fc["hours_ahead"] = hours.astype(int)
-    fc = _add_context(fc, name, thresholds.assign(location=name), forecast_columns(MODEL_KEYS))
+    fc = _add_context(fc, name, state["regime_thresholds"], forecast_columns(MODEL_KEYS))
 
     variables = {}
     for var in VARIABLES:
@@ -224,8 +274,10 @@ def live_forecast(name: str, lat: float, lon: float) -> dict:
                 g = {"config": "regime", "method": "equal", "tables": {}, "models": models, "skill": [],
                      "event_verification": None, "evaluation": None}
             b = _blend(live, g["tables"], g["config"], g["method"], g["models"])
-            for m in g["models"]:
-                b[f"weight_{m}"] = b[f"w_{g['method']}_{m}"]
+            for m in MODEL_KEYS:
+                b[f"weight_{m}"] = b[f"w_{g['method']}_{m}"] if m in g["models"] else 0.0
+                if m not in g["models"]:
+                    b[f"bias_{m}"] = 0.0
             b["models"] = [g["models"]] * len(b)
             rows.append(b)
             chosen.append({"lead_day": day, "config": g["config"], "method": g["method"], "models": g["models"]})
@@ -234,8 +286,10 @@ def live_forecast(name: str, lat: float, lon: float) -> dict:
                 verification.append({**g["event_verification"], "lead_day": day})
             if day == 1 and g["evaluation"] is not None:
                 recent = g["evaluation"].sort_values("timestamp")
+        blended = pd.concat(rows, ignore_index=True).sort_values("timestamp").reset_index(drop=True)
         variables[var] = {
-            "points": _points(pd.concat(rows, ignore_index=True), thresholds, var),
+            "points": _points(blended),
+            "days": _days(blended, thresholds, var),
             "chosen": chosen,
             "skill": skill,
             "event_verification": verification,
@@ -253,31 +307,52 @@ def live_forecast(name: str, lat: float, lon: float) -> dict:
         "truth_available_until": last_obs.isoformat(),
         "history_window_days": HISTORY_DAYS,
         "evaluation_window": [(last_obs - pd.Timedelta(days=HOLDOUT_DAYS)).isoformat(), last_obs.isoformat()],
-        "thresholds": _records(thresholds),
+        "event_definition": {"window_days": WINDOW_DAYS, "climate_days": CLIMATE_DAYS, "percentile": 95,
+                             "wet_day_mm": WET_DAY_MM, "daily_aggregate": DAILY_AGG, "day_boundary": "IST"},
         "variables": variables,
         "compute_seconds": round(time.time() - t0, 2),
     }
 
 
-def _points(b: pd.DataFrame, thresholds: pd.DataFrame, var: str) -> list[dict]:
-    b = b.sort_values("timestamp").reset_index(drop=True)
-    thr = b[["season"]].merge(thresholds, on="season", how="left")[THRESHOLD_COLUMNS[var]].to_numpy()
+def _points(b: pd.DataFrame) -> list[dict]:
     out = []
-    for i, r in b.iterrows():
+    for r in b.itertuples(index=False):
+        r = r._asdict()
         models = r["models"]
-        members = {m: _num(r[f"{m}_forecast"]) for m in MODEL_KEYS}
-        weights = {m: _num(r[f"weight_{m}"]) for m in models}
-        corrected = {m: members[m] - r[f"bias_{m}"] for m in models if members[m] is not None}
-        wsum = sum(weights[m] for m in corrected)
-        prob = sum(weights[m] for m, v in corrected.items() if v >= thr[i]) / wsum if wsum else None
-        blended = _num(r["blended"])
         out.append({
             "time": r["timestamp"].isoformat(), "hours_ahead": int(r["hours_ahead"]), "lead_day": int(r["lead_time_hours"] // 24),
-            "members": members, "blended": blended, "weights": weights,
+            "members": {m: _num(r[f"{m}_forecast"]) for m in MODEL_KEYS}, "blended": _num(r["blended"]),
+            "weights": {m: _num(r[f"weight_{m}"]) for m in models},
             "bias_correction": {m: _num(-r[f"bias_{m}"]) for m in models},
-            "fallback_level": r["fallback_level"], "n_history": int(r["n_history"]),
-            "regime": r["weather_regime"], "event_threshold": _num(thr[i]),
-            "event_probability": _num(prob), "alert": bool(blended is not None and blended >= thr[i]),
+            "fallback_level": r["fallback_level"], "n_history": int(r["n_history"]), "regime": r["weather_regime"],
+        })
+    return out
+
+
+def _days(b: pd.DataFrame, thresholds: pd.DataFrame, var: str) -> list[dict]:
+    """Per IST day: blended and member daily aggregates, the day-of-year
+    threshold, event flag and skill-weighted member agreement."""
+    agg = DAILY_AGG[var]
+    b = b.assign(date=_ist_date(b["timestamp"]))
+    for m in MODEL_KEYS:
+        b[f"corr_{m}"] = b[f"{m}_forecast"] - b[f"bias_{m}"]
+    out = []
+    for date, g in b.groupby("date", sort=True):
+        thr = float(_threshold_for(pd.Series([date]), thresholds, var)[0])
+        blended = float(getattr(g["blended"], agg)())
+        members, weights = {}, {}
+        for m in MODEL_KEYS:
+            col = g[f"corr_{m}"]
+            members[m] = float(getattr(col, agg)()) if col.notna().all() else None
+            weights[m] = float(g[f"weight_{m}"].mean())
+        agree = [m for m, v in members.items() if v is not None and weights[m] > 0]
+        wsum = sum(weights[m] for m in agree)
+        prob = sum(weights[m] for m in agree if members[m] >= thr) / wsum if wsum else None
+        out.append({
+            "date": date.date().isoformat(), "hours": len(g), "complete": len(g) == 24,
+            "first_hour_ist": (g["timestamp"].min() + IST).strftime("%H:%M"),
+            "blended": _num(blended), "members": {m: _num(v) for m, v in members.items()},
+            "threshold": _num(thr), "event": bool(np.isfinite(thr) and blended >= thr), "probability": _num(prob),
         })
     return out
 
@@ -295,7 +370,3 @@ def _num(v):
     except (TypeError, ValueError):
         return None
     return f if np.isfinite(f) else None
-
-
-def _records(df: pd.DataFrame) -> list[dict]:
-    return [{k: (_num(v) if isinstance(v, (float, np.floating)) else v) for k, v in r.items()} for r in df.to_dict("records")]

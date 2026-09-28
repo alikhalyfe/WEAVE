@@ -40,8 +40,9 @@ def forecast(name: str, lat: float, lon: float) -> dict:
 
 def summarise(payload: dict) -> dict:
     """Headline numbers for the map: next-24h blended max temperature, total
-    rain, max wind; the dominant member per variable and lead day; and
-    every alert in the next 72h. All read straight from the payload."""
+    rain, max wind; the dominant member per variable and lead day; skill;
+    and daily extreme events for today and the next two IST days. All read
+    straight from the payload."""
     out = {"place": payload["place"], "fetched_at": payload["fetched_at"], "next_24h": {}, "dominant": {}, "alerts": []}
     agg = {"temperature_2m_c": max, "precipitation_mm": sum, "wind_speed_10m": max}
     for var, d in payload["variables"].items():
@@ -64,14 +65,12 @@ def summarise(payload: dict) -> dict:
             for day, v in sorted(by_day.items()) if "blended" in v
         ]
         out.setdefault("verification", {})[var] = d["event_verification"]
-        hits = [p for p in d["points"] if p["alert"] and p["hours_ahead"] < 72]
-        if hits:
-            peak = max(hits, key=lambda p: p["blended"])
-            out["alerts"].append({
-                "target_variable": var, "first_time": hits[0]["time"], "hours": len(hits), "peak_time": peak["time"],
-                "peak_value": peak["blended"], "threshold": peak["event_threshold"],
-                "max_probability": max(p["event_probability"] or 0 for p in hits),
-            })
+        for day in d["days"][:3]:  # today (IST) and the next two days
+            if day["event"]:
+                out["alerts"].append({
+                    "target_variable": var, "date": day["date"], "value": day["blended"], "threshold": day["threshold"],
+                    "probability": day["probability"], "complete": day["complete"], "first_hour_ist": day["first_hour_ist"],
+                })
     return out
 
 

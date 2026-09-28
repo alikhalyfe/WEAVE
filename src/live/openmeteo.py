@@ -61,7 +61,8 @@ BUDGET = {60: 540, 3600: 4500, 86400: 9000}
 def request_weight(params: dict) -> float:
     """Open-Meteo's call accounting: max(1, variables/10) x max(1, days/14)
     per location. Variables are counted per model (conservative)."""
-    n_vars = len(params.get("hourly", "").split(",")) * max(1, len(params.get("models", "").split(",")))
+    fields = params.get("hourly") or params.get("daily") or ""
+    n_vars = len(fields.split(",")) * max(1, len(params.get("models", "").split(",")))
     if "start_date" in params:
         days = (date.fromisoformat(params["end_date"]) - date.fromisoformat(params["start_date"])).days + 1
     else:
@@ -223,6 +224,27 @@ def era5(lat: float, lon: float, start: date, end: date, kind: str = "era5") -> 
     body, fetched_at = _get(ARCHIVE_URL, params, kind)
     df = _hourly_frame(body["hourly"]).rename(columns={v: k for k, v in VARIABLES.items()})
     return df.dropna(subset=list(VARIABLES)).reset_index(drop=True), fetched_at
+
+
+DAILY_VARIABLES = {
+    "temperature_2m_c": "temperature_2m_max",
+    "precipitation_mm": "precipitation_sum",
+    "wind_speed_10m": "wind_speed_10m_max",
+}
+
+
+def era5_daily(lat: float, lon: float, start: date, end: date) -> tuple[pd.DataFrame, float]:
+    """ERA5 daily max temperature, rain total and max wind on IST calendar
+    days (date, temperature_2m_c, precipitation_mm, wind_speed_10m)."""
+    params = {
+        **COMMON, "timezone": "Asia/Kolkata", "latitude": f"{lat:.4f}", "longitude": f"{lon:.4f}",
+        "daily": ",".join(DAILY_VARIABLES.values()), "models": "era5",
+        "start_date": start.isoformat(), "end_date": end.isoformat(),
+    }
+    body, fetched_at = _get(ARCHIVE_URL, params, "climatology")
+    df = pd.DataFrame(body["daily"]).rename(columns={v: k for k, v in DAILY_VARIABLES.items()})
+    df["date"] = pd.to_datetime(df.pop("time"))
+    return df.dropna(subset=list(DAILY_VARIABLES)).reset_index(drop=True), fetched_at
 
 
 def model_runs() -> dict[str, dict]:
