@@ -3,20 +3,16 @@ coordinates always come from the Open-Meteo geocoding API, never typed in."""
 
 from src.live import openmeteo
 
+# 24 cities spanning every region. Kept modest because each new place costs
+# ~120 Open-Meteo call-units to learn (free tier: 5,000/hour, 10,000/day);
+# search still reaches any place in India.
 TRACKED_CITIES = [
     ("Mumbai", "Maharashtra"), ("Delhi", "Delhi"), ("Bengaluru", "Karnataka"), ("Hyderabad", "Telangana"),
-    ("Ahmedabad", "Gujarat"), ("Chennai", "Tamil Nadu"), ("Kolkata", "West Bengal"), ("Surat", "Gujarat"),
-    ("Pune", "Maharashtra"), ("Jaipur", "Rajasthan"), ("Lucknow", "Uttar Pradesh"), ("Kanpur", "Uttar Pradesh"),
-    ("Nagpur", "Maharashtra"), ("Indore", "Madhya Pradesh"), ("Bhopal", "Madhya Pradesh"),
-    ("Visakhapatnam", "Andhra Pradesh"), ("Patna", "Bihar"), ("Vadodara", "Gujarat"), ("Ludhiana", "Punjab"),
-    ("Agra", "Uttar Pradesh"), ("Nashik", "Maharashtra"), ("Varanasi", "Uttar Pradesh"),
-    ("Srinagar", "Jammu and Kashmir"), ("Aurangabad", "Maharashtra"), ("Amritsar", "Punjab"),
-    ("Ranchi", "Jharkhand"), ("Guwahati", "Assam"), ("Chandigarh", "Chandigarh"),
-    ("Thiruvananthapuram", "Kerala"), ("Kochi", "Kerala"), ("Coimbatore", "Tamil Nadu"),
-    ("Madurai", "Tamil Nadu"), ("Bhubaneswar", "Odisha"), ("Raipur", "Chhattisgarh"),
-    ("Dehradun", "Uttarakhand"), ("Shimla", "Himachal Pradesh"), ("Jodhpur", "Rajasthan"),
-    ("Panaji", "Goa"), ("Mangaluru", "Karnataka"), ("Leh", "Ladakh"), ("Port Blair", "Andaman and Nicobar"),
-    ("Gangtok", "Sikkim"), ("Shillong", "Meghalaya"), ("Imphal", "Manipur"),
+    ("Chennai", "Tamil Nadu"), ("Kolkata", "West Bengal"), ("Ahmedabad", "Gujarat"), ("Pune", "Maharashtra"),
+    ("Jaipur", "Rajasthan"), ("Lucknow", "Uttar Pradesh"), ("Nagpur", "Maharashtra"), ("Bhopal", "Madhya Pradesh"),
+    ("Patna", "Bihar"), ("Bhubaneswar", "Odisha"), ("Guwahati", "Assam"), ("Thiruvananthapuram", "Kerala"),
+    ("Srinagar", "Jammu and Kashmir"), ("Dehradun", "Uttarakhand"), ("Raipur", "Chhattisgarh"), ("Ranchi", "Jharkhand"),
+    ("Chandigarh", "Chandigarh"), ("Panaji", "Goa"), ("Visakhapatnam", "Andhra Pradesh"), ("Leh", "Ladakh"),
 ]
 
 

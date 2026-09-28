@@ -20,7 +20,7 @@ _errors: dict[str, tuple[float, str]] = {}
 _pending: set[str] = set()
 _resolved: dict[str, dict | None] = {}
 _lock = threading.Lock()
-_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="weave-live")
+_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="weave-live")
 
 
 def _key(lat: float, lon: float) -> tuple:
@@ -40,18 +40,30 @@ def forecast(name: str, lat: float, lon: float) -> dict:
 
 def summarise(payload: dict) -> dict:
     """Headline numbers for the map: next-24h blended max temperature, total
-    rain, max wind; the dominant member per variable at lead day 1; and
+    rain, max wind; the dominant member per variable and lead day; and
     every alert in the next 72h. All read straight from the payload."""
     out = {"place": payload["place"], "fetched_at": payload["fetched_at"], "next_24h": {}, "dominant": {}, "alerts": []}
     agg = {"temperature_2m_c": max, "precipitation_mm": sum, "wind_speed_10m": max}
     for var, d in payload["variables"].items():
         window = [p for p in d["points"] if p["hours_ahead"] < 24 and p["blended"] is not None]
         out["next_24h"][var] = round(agg[var](p["blended"] for p in window), 2) if window else None
-        day1 = [p["weights"] for p in d["points"] if p["lead_day"] == 1]
-        if day1:
-            mean = {m: sum(w.get(m) or 0 for w in day1) / len(day1) for m in day1[0]}
+        out["dominant"][var] = {}
+        for day in sorted({p["lead_day"] for p in d["points"]}):
+            ws = [p["weights"] for p in d["points"] if p["lead_day"] == day]
+            mean = {m: round(sum(w.get(m) or 0 for w in ws) / len(ws), 3) for m in ws[0]}
             top = max(mean, key=mean.get)
-            out["dominant"][var] = {"model": top, "weight": round(mean[top], 3), "weights": mean}
+            out["dominant"][var][str(day)] = {"model": top, "weight": mean[top], "weights": mean}
+        by_day = {}
+        for s in d["skill"]:
+            by_day.setdefault(s["lead_day"], {})[s["source"]] = s["mae"]
+        out.setdefault("skill", {})[var] = [
+            {"lead_day": day, "blended": v["blended"],
+             "best_member": min((x, k) for k, x in v.items() if k not in ("blended", "equal_mean"))[1],
+             "best_member_mae": min(x for k, x in v.items() if k not in ("blended", "equal_mean")),
+             "equal_mean": v.get("equal_mean")}
+            for day, v in sorted(by_day.items()) if "blended" in v
+        ]
+        out.setdefault("verification", {})[var] = d["event_verification"]
         hits = [p for p in d["points"] if p["alert"] and p["hours_ahead"] < 72]
         if hits:
             peak = max(hits, key=lambda p: p["blended"])

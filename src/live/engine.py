@@ -19,8 +19,8 @@ For one place:
    Skill state is cached for SKILL_TTL; hourly refreshes only re-blend.
 4. Blend the members' latest run with those weights. Lead day for a valid
    time = floor(hours ahead / 24), matching Open-Meteo's previous_dayN.
-5. Extremes: event = value >= the place's location x season p95 from ERA5
-   2021-2025. Event probability = skill-weighted share of (bias-corrected)
+5. Extremes: event = value >= the place's location x season p95 from the
+   last 12 months of ERA5. Event probability = skill-weighted share of (bias-corrected)
    members at/above it. Evaluate-window POD/FAR/CSI are reported alongside.
 
 Nothing is fabricated: missing members are dropped and renormalised,
@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import date, timedelta
+from datetime import timedelta
 
 import numpy as np
 import pandas as pd
@@ -46,10 +46,10 @@ from src.regime.classifier import THRESHOLD_COLUMNS, classify, training_threshol
 HISTORY_DAYS = 120
 HOLDOUT_DAYS = 21
 TRUTH_LOOKBACK_DAYS = 135
-SKILL_TTL = 12 * 3600
+SKILL_TTL = 24 * 3600
+CLIMATE_DAYS = 365
 MIN_COVERAGE = 0.8
 MIN_SAMPLES = 50
-CLIMATE_START, CLIMATE_END = date(2021, 1, 1), date(2025, 12, 31)
 
 
 def _utc_now() -> pd.Timestamp:
@@ -75,11 +75,15 @@ def _add_context(df: pd.DataFrame, name: str, thresholds: pd.DataFrame, value_co
 
 
 def climatology(name: str, lat: float, lon: float) -> pd.DataFrame:
-    """location x season p95 thresholds from ERA5 2021-2025 at this place."""
-    clim, _ = openmeteo.era5(lat, lon, CLIMATE_START, CLIMATE_END, kind="climatology")
+    """location x season p95 thresholds from the last 12 months of ERA5 at
+    this place (12 months keeps the request cheap under Open-Meteo's fair-use
+    accounting; every season is covered once)."""
+    end = _utc_now().date() - timedelta(days=7)  # ERA5 publication lag
+    end = end.replace(day=1) - timedelta(days=1)  # whole months only, so the cache key is stable for weeks
+    clim, _ = openmeteo.era5(lat, lon, end - timedelta(days=CLIMATE_DAYS - 1), end, kind="climatology")
     clim["location"] = name
     clim["season"] = clim["timestamp"].dt.month.map(MONTH_TO_SEASON)
-    return training_thresholds(clim, calibration_end=pd.Timestamp(CLIMATE_END) + pd.Timedelta(days=1))
+    return training_thresholds(clim, calibration_end=pd.Timestamp(end) + pd.Timedelta(days=1))
 
 
 def _history(name: str, lat: float, lon: float, thresholds: pd.DataFrame) -> tuple[pd.DataFrame, pd.Timestamp]:

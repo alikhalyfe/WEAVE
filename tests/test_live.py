@@ -156,4 +156,19 @@ def test_api_live_endpoints():
 
     summary = service.summarise(body)
     assert summary["next_24h"]["temperature_2m_c"] is not None
-    assert summary["dominant"]["temperature_2m_c"]["model"] in {"ecmwf_ifs", "aifs"}
+    assert summary["dominant"]["temperature_2m_c"]["1"]["model"] in {"ecmwf_ifs", "aifs"}
+
+
+def test_request_weight_follows_open_meteo_accounting():
+    # 2 weeks x 15 variables = 1.5 calls (Open-Meteo's own example)
+    assert openmeteo.request_weight({"hourly": ",".join(["v"] * 15), "models": "era5",
+                                     "start_date": "2026-01-01", "end_date": "2026-01-14", "latitude": "1"}) == 1.5
+    assert openmeteo.request_weight({"hourly": "a", "forecast_days": 7, "latitude": "1,2"}) == 2
+
+
+def test_budget_refuses_instead_of_exceeding_hourly_limit(monkeypatch):
+    b = openmeteo._Budget()
+    monkeypatch.setitem(openmeteo.BUDGET, 3600, 10)
+    b.acquire(8)
+    with pytest.raises(openmeteo.OpenMeteoError, match="hourly"):
+        b.acquire(5)

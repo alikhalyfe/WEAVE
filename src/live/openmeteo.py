@@ -18,6 +18,9 @@ Member models (IDs verified against the live API):
 
 from __future__ import annotations
 
+import threading
+import time
+from collections import deque
 from datetime import date, datetime, timezone
 
 import httpx
@@ -48,8 +51,57 @@ PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 META_URL = "https://api.open-meteo.com/data/{model}/static/meta.json"
 
-TTL = {"geocode": 30 * 86400, "forecast": 3600, "previous_runs": 6 * 3600, "era5": 12 * 3600,
+TTL = {"geocode": 30 * 86400, "forecast": 3600, "previous_runs": 24 * 3600, "era5": 12 * 3600,
        "climatology": 30 * 86400, "meta": 1800}
+
+# Free-tier limits (https://open-meteo.com/en/pricing), with headroom.
+BUDGET = {60: 540, 3600: 4500, 86400: 9000}
+
+
+def request_weight(params: dict) -> float:
+    """Open-Meteo's call accounting: max(1, variables/10) x max(1, days/14)
+    per location. Variables are counted per model (conservative)."""
+    n_vars = len(params.get("hourly", "").split(",")) * max(1, len(params.get("models", "").split(",")))
+    if "start_date" in params:
+        days = (date.fromisoformat(params["end_date"]) - date.fromisoformat(params["start_date"])).days + 1
+    else:
+        days = int(params.get("forecast_days", 1))
+    n_loc = len(str(params.get("latitude", "")).split(","))
+    return max(1.0, n_vars / 10) * max(1.0, days / 14) * n_loc
+
+
+class _Budget:
+    """Sliding-window spend tracker. Waits out the minute window; refuses
+    (rather than hammering the API) once the hourly/daily budget is spent."""
+
+    def __init__(self):
+        self.spent: deque[tuple[float, float]] = deque()
+        self.lock = threading.Lock()
+
+    def _used(self, window: float, now: float) -> float:
+        return sum(w for t, w in self.spent if now - t < window)
+
+    def acquire(self, weight: float, max_wait: float = 65.0) -> None:
+        deadline = time.time() + max_wait
+        while True:
+            with self.lock:
+                now = time.time()
+                while self.spent and now - self.spent[0][0] > 86400:
+                    self.spent.popleft()
+                for window in (86400, 3600):
+                    if self._used(window, now) + weight > BUDGET[window]:
+                        raise OpenMeteoError(
+                            f"WEAVE's Open-Meteo {'daily' if window == 86400 else 'hourly'} request budget is used up; "
+                            "cached places still work, new ones will be available later.")
+                if self._used(60, now) + weight <= BUDGET[60]:
+                    self.spent.append((now, weight))
+                    return
+            if time.time() > deadline:
+                raise OpenMeteoError("Open-Meteo per-minute limit reached; try again in a minute.")
+            time.sleep(2)
+
+
+budget = _Budget()
 COMMON = {"timezone": "UTC", "wind_speed_unit": "ms", "precipitation_unit": "mm", "temperature_unit": "celsius"}
 
 
@@ -72,6 +124,8 @@ def _get(url: str, params: dict, kind: str) -> tuple[object, float]:
     hit = cache.get(key, TTL[kind])
     if hit:
         return hit[1], hit[0]
+    if url != GEOCODE_URL and "meta.json" not in url:
+        budget.acquire(request_weight(params))
     last_error = None
     for _ in range(2):
         try:
