@@ -1,20 +1,37 @@
-"""
-Adaptive model weight calculation.
-
-Member 2 - Adaptive Blending
-"""
-
-
-def calculate_weights(errors):
+def calculate_weights(model_errors, epsilon=1e-6):
     """
-    Calculate model weights from historical errors.
+    Calculate model weights using inverse MAE.
 
-    Lower error = higher weight.
+    Parameters
+    ----------
+    model_errors : dict
+        Dictionary containing model names and their historical MAE.
+        Example:
+        {
+            "model_a": 10,
+            "model_b": 20,
+            "ai_model": 5
+        }
 
-    Args:
-        errors: Dictionary containing model errors.
+    epsilon : float
+        Small value to prevent division by zero.
 
-    Returns:
-        Dictionary containing normalized model weights.
+    Returns
+    -------
+    dict
+        Normalized weights for each model.
     """
-    pass
+
+    inverse_errors = {
+        model: 1 / (error + epsilon)
+        for model, error in model_errors.items()
+    }
+
+    total = sum(inverse_errors.values())
+
+    weights = {
+        model: value / total
+        for model, value in inverse_errors.items()
+    }
+
+    return weights

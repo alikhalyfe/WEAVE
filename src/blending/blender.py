@@ -1,19 +1,36 @@
-"""
-Forecast blending logic.
-
-Member 2 - Adaptive Blending
-"""
-
-
 def blend_forecasts(forecasts, weights):
     """
-    Combine forecasts using model weights.
+    Combine multiple model forecasts using their weights.
 
-    Args:
-        forecasts: Dictionary of model forecasts.
-        weights: Dictionary of model weights.
+    Parameters
+    ----------
+    forecasts : dict
+        Forecast values from each model.
+        Example:
+        {
+            "model_a": 80,
+            "model_b": 70,
+            "ai_model": 90
+        }
 
-    Returns:
-        Blended forecast value.
+    weights : dict
+        Weight assigned to each model.
+        Example:
+        {
+            "model_a": 0.3,
+            "model_b": 0.2,
+            "ai_model": 0.5
+        }
+
+    Returns
+    -------
+    float
+        Final blended forecast.
     """
-    pass
+
+    blended_value = sum(
+        forecasts[model] * weights[model]
+        for model in forecasts
+    )
+
+    return blended_value
