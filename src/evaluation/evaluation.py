@@ -13,9 +13,32 @@ def evaluate_model(y_true, y_pred):
     }
 
 
+def evaluate_multiple_models(data, observed_column, prediction_columns):
+    """
+    Evaluate multiple forecast models against observed values.
+    """
+
+    results = []
+
+    y_true = data[observed_column]
+
+    for model in prediction_columns:
+        y_pred = data[model]
+
+        metrics = evaluate_model(y_true, y_pred)
+
+        results.append({
+            "Model": model,
+            "MAE": metrics["MAE"],
+            "RMSE": metrics["RMSE"]
+        })
+
+    return pd.DataFrame(results)
+
+
 def load_observed_data(file_path):
     """
-    Load observed ERA5 weather data.
+    Load weather data.
     """
     return pd.read_csv(file_path)
 
