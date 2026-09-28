@@ -27,3 +27,5 @@ data/processed/*
 # OS
 .DS_Store
 Thumbs.db
+# Live-mode Open-Meteo response cache
+data/live_cache/
