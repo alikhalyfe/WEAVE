@@ -1,9 +1,14 @@
 """Trains Model A (persistence), Model B (Random Forest) and the AI Model
-(gradient-boosted trees) per (target_variable, lead_time_hours), predicts
-on the test period, and writes real forecasts into
-data/processed/lead_time_targets.csv (test-period rows only -- train-period
-rows keep empty forecast columns, matching the "no fabricated forecasts"
-rule: we don't report in-sample fit as a forecast).
+(gradient-boosted trees) per (target_variable, lead_time_hours) and writes
+real out-of-sample forecasts into data/processed/lead_time_targets.csv.
+
+Two runs, each strictly out-of-sample:
+
+    hindcast    train 2021-2023 -> forecast 2024  (skill history for weights)
+    operational train 2021-2024 -> forecast 2025  (evaluation period)
+
+2021-2023 rows keep empty forecast columns -- we don't report in-sample fit
+as a forecast.
 
 Run from the repo root: python -m src.models.generate_forecasts
 """
@@ -18,18 +23,27 @@ from src.models.persistence import PersistenceModel
 from src.models.tree_models import AIModel, RandomForestModel
 from src.models.training import FEATURE_COLUMNS, build_modeling_dataset, get_leakage_safe_train_test
 
+FORECAST_RUNS = [
+    ("hindcast", config.HINDCAST_TRAIN_END, config.HINDCAST_START, config.HINDCAST_END),
+    ("operational", config.TRAIN_END, config.TEST_START, config.TEST_END),
+]
 
-def run() -> pd.DataFrame:
-    print("Building modeling dataset (features + lead-time targets)...")
-    modeling_df = build_modeling_dataset()
 
-    prediction_blocks = []
-    print()
-    print(f"{'variable':<20}{'lead_h':>7}{'model':<14}{'MAE':>10}{'n_train':>10}{'n_test':>10}")
-
+def forecast_window(
+    modeling_df: pd.DataFrame,
+    train_end: pd.Timestamp,
+    test_start: pd.Timestamp,
+    test_end: pd.Timestamp,
+    run_name: str = "",
+) -> pd.DataFrame:
+    """Fit all models on data whose targets land at/before train_end and
+    predict issue times in [test_start, test_end]. Long format, one row per
+    (timestamp, location, lead_time_hours, target_variable)."""
+    blocks = []
     for var in config.TARGET_VARIABLES:
         for lead_h in config.LEAD_TIMES_HOURS:
-            train_df, test_df = get_leakage_safe_train_test(modeling_df, lead_h)
+            train_df, test_df = get_leakage_safe_train_test(modeling_df, lead_h, train_end, test_start)
+            test_df = test_df[test_df["timestamp"] <= test_end]
             target_col = f"{var}_target_{lead_h}h"
 
             models = {
@@ -45,19 +59,29 @@ def run() -> pd.DataFrame:
             for name, model in models.items():
                 if hasattr(model, "fit"):
                     model.fit(train_df)
-                preds = model.predict(test_df, lead_h)
-                block[f"{name}_forecast"] = preds["forecast"].values
+                block[f"{name}_forecast"] = model.predict(test_df, lead_h)["forecast"].values
 
                 evaluable = test_df[target_col].notna() & block[f"{name}_forecast"].notna()
                 score = (
                     mae(test_df.loc[evaluable, target_col], block.loc[evaluable, f"{name}_forecast"])
                     if evaluable.any() else float("nan")
                 )
-                print(f"{var:<20}{lead_h:>7}{name:<14}{score:>10.4f}{len(train_df):>10}{len(test_df):>10}")
+                print(f"{run_name:<12}{var:<20}{lead_h:>7}  {name:<10}{score:>10.4f}{len(train_df):>10}{len(test_df):>10}")
 
-            prediction_blocks.append(block)
+            blocks.append(block)
+    return pd.concat(blocks, ignore_index=True)
 
-    predictions_df = pd.concat(prediction_blocks, ignore_index=True)
+
+def run() -> pd.DataFrame:
+    print("Building modeling dataset (features + lead-time targets)...")
+    modeling_df = build_modeling_dataset()
+
+    print()
+    print(f"{'run':<12}{'variable':<20}{'lead_h':>7}  {'model':<10}{'MAE':>10}{'n_train':>10}{'n_test':>10}")
+    predictions_df = pd.concat(
+        [forecast_window(modeling_df, *window, run_name=name) for name, *window in FORECAST_RUNS],
+        ignore_index=True,
+    )
 
     print()
     print("Merging predictions into the lead-time forecast dataset...")
@@ -80,8 +104,7 @@ def run() -> pd.DataFrame:
     config.PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     final.to_csv(config.LEAD_TIME_TARGETS_PATH, index=False)
     print(f"Wrote {len(final):,} rows to {config.LEAD_TIME_TARGETS_PATH}")
-    populated = final["model_a_forecast"].notna().sum()
-    print(f"Rows with real forecasts (test period): {populated:,}")
+    print(f"Rows with real forecasts (2024 hindcast + 2025): {final['model_a_forecast'].notna().sum():,}")
 
     return final
 

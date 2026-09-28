@@ -32,7 +32,14 @@ TRAIN_END = pd.Timestamp("2024-12-31 23:00:00")
 TEST_START = pd.Timestamp("2025-01-01 00:00:00")
 TEST_END = pd.Timestamp("2025-12-31 23:00:00")
 
-VALID_SEASONS = {"Winter", "Summer", "Monsoon", "Post-Monsoon"}
+# Hindcast run: models trained on 2021-2023 forecast 2024 out-of-sample, so
+# the blender has a full year of honest (forecast, actual) skill history
+# before the 2025 evaluation period starts.
+HINDCAST_TRAIN_END = pd.Timestamp("2023-12-31 23:00:00")
+HINDCAST_START = pd.Timestamp("2024-01-01 00:00:00")
+HINDCAST_END = TRAIN_END
+
+VALID_SEASONS ={"Winter", "Summer", "Monsoon", "Post-Monsoon"}
 
 MONTH_TO_SEASON = {
     12: "Winter", 1: "Winter", 2: "Winter",
