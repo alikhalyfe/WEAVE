@@ -55,6 +55,42 @@ Two blending APIs share the same components:
 - `adaptive_blender.adaptive_blend`: single case, inverse-MAE, the original ladder (location/season/lead/regime)
 - `operational.run_rolling_blend`: vectorized, all methods and configurations, rolling-origin
 
+## Live mode (`src/live/`)
+
+```mermaid
+flowchart LR
+  G[Open-Meteo geocoding<br/>India only] --> P[place]
+  P --> F[forecast API<br/>IFS · GFS · ICON · AIFS latest runs]
+  P --> H[previous-runs API<br/>archived forecasts, lead days 0-7]
+  P --> T[ERA5 archive<br/>hourly truth, ~6-day lag]
+  P --> C[ERA5 daily, 2 years<br/>day-of-year p95 thresholds]
+  H & T --> S[skill_state<br/>fit / select / evaluate windows]
+  S & F --> B[blend_rows<br/>same engine as historical]
+  C --> E[daily extreme events]
+  B --> E
+  B & E --> API[/api/live/*]
+```
+
+| Module | Role |
+|---|---|
+| `openmeteo.py` | HTTP client with TTL cache (`cache.py`) and a request budget based on Open-Meteo's own call weighting (`max(1, vars/10) × max(1, days/14)`). It waits out the per-minute limit and refuses cleanly past the hourly or daily budget. |
+| `engine.py` | Per place: 120 days of history split into fit, select (21 d) and evaluate (21 d) windows. The candidate (config × method, including best-single-model) is chosen on select and scored on evaluate, then refitted on everything. Skill state is cached 24 h. |
+| `service.py` | Result cache (30 min), background warm-up of the 24 tracked cities (2 threads), and headline summaries for the map. |
+| `cities.py` | Tracked city names and states. Coordinates always come from geocoding. |
+
+Leads: Open-Meteo archives forecasts by lead **day** (`previous_dayN`), so the
+live leads are days 0–7. A valid time *h* hours ahead uses the weights for
+day `floor(h/24)`.
+
+Extremes: judged per IST day. The blended daily max temperature, rain total or
+max wind is compared with the 95th percentile of the same ±15 days of year over
+the place's last 2 years of ERA5 (rain: wet days ≥ 1 mm only). The agreement
+score is the skill-weighted share of bias-corrected members reaching it.
+
+Budget: a new place costs about 145 call units the first time (skill history
+≈ 83, truth ≈ 10, climatology ≈ 52); after that, mostly cache hits. The free
+tier allows 600 units per minute, 5,000 per hour and 10,000 per day.
+
 ## API
 
 | Endpoint | Purpose |
@@ -66,5 +102,9 @@ Two blending APIs share the same components:
 | `GET /api/daily?location&variable&lead` | Daily summary for the whole year |
 | `GET /api/weights`, `/api/skill`, `/api/extremes` | Weight maps, skill tables, event verification (filterable by `variable`, `lead`) |
 | `POST /api/blend` | Blend new member forecasts with the learned weights |
+| `GET /api/live/search?q` | Places in India (geocoding) |
+| `GET /api/live/forecast?lat&lon&name` | Live 7-day blend, weights per lead day, daily extremes, held-out skill |
+| `GET /api/live/cities` | Tracked cities: status (ready / pending / error) and summaries |
+| `GET /api/live/models` | Member models and their latest run times |
 
 The interactive docs are at `/docs`.

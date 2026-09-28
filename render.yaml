@@ -1,0 +1,17 @@
+# Render Blueprint: WEAVE API (FastAPI).
+# Serves live blends (Open-Meteo) and the committed 2025 replay artifacts in
+# data/artifacts/. No training or workflow run happens on the server.
+services:
+  - type: web
+    name: weave-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn src.api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      # Comma-separated frontend origin(s), e.g. https://weave.vercel.app
+      - key: ALLOWED_ORIGINS
+        sync: false
