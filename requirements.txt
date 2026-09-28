@@ -1,6 +1,9 @@
 pandas
 numpy
+scipy
 scikit-learn
 fastapi
 uvicorn
 pydantic
+httpx
+pytest
