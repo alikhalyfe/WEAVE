@@ -122,7 +122,7 @@ function ForecastPage() {
               })}
               <Rise>
                 <ForecastCard label="Forecast regime" icon={REGIME_ICONS[vd.points[0]?.regime] || "cloud"} accent="indigo"
-                  value={vd.points[0]?.regime || "—"} unit="" detail={`Now · ${Object.entries(regimes).map(([r, n]) => `${r} ${n}h`).join(" · ")} (72 h)`} />
+                  value={vd.points[0]?.regime || "—"} unit="" detail={`Next 72 h: ${Object.entries(regimes).map(([r, n]) => `${r} ${n} h`).join(" · ")}`} />
               </Rise>
             </Stagger>
 
