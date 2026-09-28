@@ -97,11 +97,13 @@ def group_weights(forecasts: np.ndarray, actual: np.ndarray, bias_correct: bool 
 def skill_table(history: pd.DataFrame, keys: list[str], bias_correct: bool = True, models: list[str] = MODELS) -> pd.DataFrame:
     """group_weights for every (target_variable, lead_time_hours, *keys) group."""
     group_keys = BASE_KEYS + keys
-    cols = forecast_columns(models)
+    forecasts = history[forecast_columns(models)].to_numpy(float)
+    actual = history["actual_value"].to_numpy(float)
     rows = []
-    for key, g in history.groupby(group_keys, sort=False):
-        stats = group_weights(g[cols].to_numpy(float), g["actual_value"].to_numpy(float), bias_correct, models)
-        rows.append({**dict(zip(group_keys, key)), **stats})
+    # Slice numpy arrays by group positions: far cheaper than a DataFrame per group.
+    for key, idx in history.groupby(group_keys, sort=False).indices.items():
+        stats = group_weights(forecasts[idx], actual[idx], bias_correct, models)
+        rows.append({**dict(zip(group_keys, key if isinstance(key, tuple) else (key,))), **stats})
     return pd.DataFrame(rows)
 
 
@@ -137,8 +139,10 @@ def blend_rows(
         ok = ~assigned & (merged["n"].to_numpy() >= min_samples)
         if not ok.any():
             continue
-        for c in params:
-            params[c][ok] = merged[c].to_numpy(float)[ok]
+        names = list(params)
+        values = merged[names].to_numpy(float)[ok]
+        for j, c in enumerate(names):
+            params[c][ok] = values[:, j]
         level[ok] = level_name
         assigned |= ok
 
