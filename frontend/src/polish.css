@@ -29,7 +29,7 @@
   padding: 22px 24px;
   color: #e2e8f0;
 }
-.hero h2 { margin: 0 0 6px; color: #fff; font: 700 22px/1.25 var(--display); letter-spacing: -0.01em; }
+.hero h2 { margin: 0 0 6px; color: #fff; font: 800 22px/1.25 var(--display); letter-spacing: -0.01em; }
 .hero p { margin: 0; max-width: 620px; font-size: 12px; line-height: 1.6; }
 .hero .search input { height: 42px; border-color: transparent; font-size: 13px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25); }
 .hero .search__icon { top: 11px; }
@@ -75,8 +75,8 @@
 }
 .scrubber__day.is-active { color: #fff; }
 .scrubber__pill { position: absolute; inset: 0; z-index: -1; border-radius: 4px; background: var(--violet); }
-.scrubber__label { font-size: 10px; font-weight: 600; }
-.scrubber__date { font: 9px var(--mono); opacity: 0.8; }
+.scrubber__label { font-size: 10px; font-weight: 700; }
+.scrubber__date { font: 500 9px var(--mono); opacity: 0.8; }
 
 /* Week in words */
 .week-card .dashboard-card__header { margin-bottom: 4px; }
@@ -111,8 +111,8 @@
   transition: background 0.2s ease;
 }
 .week__summary:hover, .week__row.is-open .week__summary { background: #f8fafc; }
-.week__day { font: 600 12px var(--display); }
-.week__day small { display: block; color: var(--muted); font: 400 9px var(--mono); }
+.week__day { font: 700 12px var(--display); }
+.week__day small { display: block; color: var(--muted); font: 500 9px var(--mono); }
 .week__icon { color: var(--violet); font-size: 22px; }
 .week__headline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
 .hazard-chip {
@@ -123,12 +123,12 @@
   background: color-mix(in srgb, var(--c) 14%, white);
   padding: 2px 7px;
   color: color-mix(in srgb, var(--c) 80%, black);
-  font: 600 9px/1.4 var(--mono);
+  font: 700 9px/1.4 var(--mono);
 }
 .hazard-chip .material-symbols-outlined { font-size: 12px; }
-.rain-chance { display: inline-flex; align-items: center; gap: 2px; color: #256abf; font: 600 11px var(--mono); }
+.rain-chance { display: inline-flex; align-items: center; gap: 2px; color: #256abf; font: 700 11px var(--mono); }
 .rain-chance .material-symbols-outlined { font-size: 13px; }
-.week__temps { display: grid; grid-template-columns: 28px 1fr 28px; align-items: center; gap: 6px; font: 600 11px var(--mono); }
+.week__temps { display: grid; grid-template-columns: 28px 1fr 28px; align-items: center; gap: 6px; font: 700 11px var(--mono); }
 .week__lo { color: #5598e7; text-align: right; }
 .week__hi { color: #d0613b; }
 .week__bar { position: relative; height: 6px; border-radius: 3px; background: #eef2f6; }
@@ -137,7 +137,7 @@
 .week__detail p { margin: 0 0 6px; color: #334155; font-size: 12px; line-height: 1.6; }
 .week__facts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 6px 0 0; font-size: 10px; }
 .week__facts dt { color: var(--muted); }
-.week__facts dd { margin: 0; font-weight: 600; }
+.week__facts dd { margin: 0; font-weight: 700; }
 .page-intro--section { margin-top: 22px; border-top: 1px dashed var(--border); padding-top: 18px; }
 
 /* Official warnings */
@@ -150,12 +150,12 @@
   background: color-mix(in srgb, var(--sev) 16%, white);
   padding: 1px 6px;
   color: color-mix(in srgb, var(--sev) 75%, black);
-  font: 700 9px/1.6 var(--mono);
+  font: 800 9px/1.6 var(--mono);
   text-transform: uppercase;
 }
-.official-item__area { margin: 4px 0 2px; color: #334155; font-size: 11px; font-weight: 600; }
+.official-item__area { margin: 4px 0 2px; color: #334155; font-size: 11px; font-weight: 700; }
 .official-item__msg { margin: 0; color: #475569; font-size: 11px; line-height: 1.5; }
-.official-item__time { display: block; margin-top: 4px; color: var(--quiet); font: 9px var(--mono); }
+.official-item__time { display: block; margin-top: 4px; color: var(--quiet); font: 500 9px var(--mono); }
 
 /* City cards */
 .city-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; }
@@ -176,18 +176,18 @@
 a.city-card:hover { border-color: #c7d2fe; box-shadow: 0 8px 22px rgba(74, 58, 167, 0.1); transform: translateY(-2px); }
 .city-card.has-warning { border-color: #fecaca; background: linear-gradient(180deg, #fff, #fff7f7); }
 .city-card.is-pending { opacity: 0.6; grid-template-areas: "name" "words"; grid-template-columns: 1fr; }
-.city-card__name { grid-area: name; font: 600 12px var(--display); }
-.city-card__name small { display: block; color: var(--muted); font: 400 9px "Inter", sans-serif; }
+.city-card__name { grid-area: name; font: 700 12px var(--display); }
+.city-card__name small { display: block; color: var(--muted); font: 500 9px "Inter", sans-serif; }
 .city-card__icon { grid-area: icon; align-self: start; color: var(--violet); font-size: 28px; }
-.city-card__temp { grid-area: temp; font: 700 18px var(--display); }
-.city-card__temp small { color: var(--muted); font-size: 12px; font-weight: 500; }
+.city-card__temp { grid-area: temp; font: 800 18px var(--display); }
+.city-card__temp small { color: var(--muted); font-size: 12px; font-weight: 600; }
 .city-card__words { grid-area: words; color: #334155; font-size: 11px; line-height: 1.35; }
-.city-card__rain { grid-area: rain; color: #256abf; font: 600 10px var(--mono); }
-.city-card__warn { grid-area: warn; display: inline-flex; align-items: center; justify-self: end; gap: 2px; color: #b91c1c; font: 600 9px var(--mono); }
+.city-card__rain { grid-area: rain; color: #256abf; font: 700 10px var(--mono); }
+.city-card__warn { grid-area: warn; display: inline-flex; align-items: center; justify-self: end; gap: 2px; color: #b91c1c; font: 700 9px var(--mono); }
 .city-card__warn .material-symbols-outlined { font-size: 13px; }
 
 /* Daily tiles additions */
-.day-tile__range { color: #475569; font: 10px var(--mono); }
+.day-tile__range { color: #475569; font: 500 10px var(--mono); }
 
 /* Rules */
 .rule-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
@@ -218,16 +218,16 @@ a.city-card:hover { border-color: #c7d2fe; box-shadow: 0 8px 22px rgba(74, 58, 1
   font: 16px/1 "Material Symbols Outlined";
   transform: translateY(-50%);
 }
-.pipeline__num { color: var(--quiet); font: 600 9px var(--mono); }
+.pipeline__num { color: var(--quiet); font: 700 9px var(--mono); }
 .pipeline__stage > .material-symbols-outlined { color: var(--violet); font-size: 22px; }
-.pipeline__stage strong { font: 600 12px var(--display); }
+.pipeline__stage strong { font: 700 12px var(--display); }
 .pipeline__stage p { margin: 0; color: #475569; font-size: 10px; line-height: 1.5; }
 .ops-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .ops-stats > div { display: grid; gap: 2px; border-radius: 6px; background: var(--surface-muted); padding: 10px; }
 .ops-stats span { color: var(--muted); font-size: 10px; }
-.ops-stats strong { font: 700 18px var(--display); }
+.ops-stats strong { font: 800 18px var(--display); }
 .budget-row { display: grid; grid-template-columns: 70px 1fr 90px; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 11px; }
-.budget-row strong { font: 500 10px var(--mono); text-align: right; }
+.budget-row strong { font: 600 10px var(--mono); text-align: right; }
 
 @media (max-width: 1020px) {
   .pipeline { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -258,11 +258,12 @@ a.city-card:hover { border-color: #c7d2fe; box-shadow: 0 8px 22px rgba(74, 58, 1
 .alignment .material-symbols-outlined { color: #0ca30c; }
 .alignment strong { font-size: 12px; }
 .alignment p { margin: 2px 0 0; color: #475569; font-size: 11px; line-height: 1.5; }
-.alignment a { color: var(--violet); font-size: 11px; font-weight: 600; text-decoration: none; white-space: nowrap; }
-.official-item__lang { margin-left: auto; border: 1px solid var(--border); border-radius: 3px; padding: 0 5px; color: var(--muted); font: 500 9px/1.6 var(--mono); }
+.alignment a { color: var(--violet); font-size: 11px; font-weight: 700; text-decoration: none; white-space: nowrap; }
+.official-item__lang { margin-left: auto; border: 1px solid var(--border); border-radius: 3px; padding: 0 5px; color: var(--muted); font: 600 9px/1.6 var(--mono); }
 .segmented { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
 @media (max-width: 560px) {
   .city-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .city-card { min-height: 0; padding: 9px; }
   .city-card__icon { font-size: 22px; }
 }
+.card-tag--historical { background: #eef2ff; color: #3730a3; }
