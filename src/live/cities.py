@@ -12,16 +12,16 @@ TRACKED_CITIES = [
     ("Jaipur", "Rajasthan"), ("Lucknow", "Uttar Pradesh"), ("Nagpur", "Maharashtra"), ("Bhopal", "Madhya Pradesh"),
     ("Patna", "Bihar"), ("Bhubaneswar", "Odisha"), ("Guwahati", "Assam"), ("Thiruvananthapuram", "Kerala"),
     ("Srinagar", "Jammu and Kashmir"), ("Dehradun", "Uttarakhand"), ("Raipur", "Chhattisgarh"), ("Ranchi", "Jharkhand"),
-    ("Chandigarh", "Chandigarh"), ("Panaji", "Goa"), ("Visakhapatnam", "Andhra Pradesh"), ("Leh", "Ladakh"),
+    ("Chandigarh", "Chandigarh"), ("Panjim", "Goa"), ("Visakhapatnam", "Andhra Pradesh"), ("Leh", "Ladakh"),
 ]
 
 
 def resolve(name: str, state: str) -> dict | None:
-    """Best geocoding match for name within state (largest population),
-    or None if the geocoder doesn't know it."""
+    """Best geocoding match for name within state (largest population), or
+    None. Never falls back to another state: the geocoder knows Goa's
+    capital as "Panjim" and returns only a Gujarat village for "Panaji"."""
     results = openmeteo.search(name, count=10)
     in_state = [r for r in results if r["state"] and state.lower() in r["state"].lower()]
-    pool = in_state or results
-    if not pool:
+    if not in_state:
         return None
-    return max(pool, key=lambda r: r["population"] or 0)
+    return max(in_state, key=lambda r: r["population"] or 0)

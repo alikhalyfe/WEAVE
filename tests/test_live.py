@@ -294,3 +294,9 @@ def test_grid_points_are_inside_india_and_blend_with_borrowed_weights():
     cell = g["cells"][0]
     assert cell["neighbours"] == ["Pune"] and cell["dominant"]["temperature_2m_c"][0] == "ecmwf_ifs"
     assert cell["values"]["temperature_2m_c"][0] is not None
+
+
+def test_city_resolution_never_crosses_states():
+    from src.live import cities
+    assert cities.resolve("Pune", "Maharashtra")["state"] == "Maharashtra"
+    assert cities.resolve("Pune", "Goa") is None  # only a Maharashtra match exists: refuse, don't guess
