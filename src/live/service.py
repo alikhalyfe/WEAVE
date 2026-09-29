@@ -76,6 +76,49 @@ def forecast(name: str, lat: float, lon: float) -> dict:
     return payload
 
 
+# ---- Browser relay: only for places this server just failed to fetch ----
+RELAY_WINDOW = 30 * 60
+_relay_allowed: dict[tuple, float] = {}
+_relay_slot = threading.Semaphore(1)  # ponytail: one relay compute at a time, a queue if it gets popular
+
+
+def allow_relay(lat: float, lon: float) -> None:
+    _relay_allowed[_key(lat, lon)] = time.time()
+
+
+def relay_allowed(lat: float, lon: float) -> bool:
+    t = _relay_allowed.get(_key(lat, lon))
+    return t is not None and time.time() - t < RELAY_WINDOW
+
+
+def relay_forecast(name: str, lat: float, lon: float, responses: dict) -> dict:
+    """Live blend from Open-Meteo responses the browser fetched. Returns
+    {'needs': [urls]} until every request is answered. The result goes back
+    to that browser only: nothing is stored (it is untrusted input)."""
+    responses = {url: body for url, body in responses.items() if body is None or openmeteo.valid_relay_body(body)}
+    if not _relay_slot.acquire(blocking=False):
+        raise RelayBusy()
+    try:
+        with openmeteo.relayed(responses) as state:
+            try:
+                payload = engine.live_forecast(name, lat, lon)
+            except openmeteo.OpenMeteoError:
+                if not state["needs"]:
+                    raise
+                engine.relay_probe(name, lat, lon)
+                payload = None
+            needs = list(dict.fromkeys(state["needs"]))
+    finally:
+        _relay_slot.release()
+    if needs:
+        return {"needs": needs}
+    return {**payload, "relayed": True}
+
+
+class RelayBusy(RuntimeError):
+    """Another relayed forecast is computing."""
+
+
 def load_snapshot() -> bool:
     """Merge the published snapshot: any city or grid newer than what this
     server has. Returns True if something was loaded."""

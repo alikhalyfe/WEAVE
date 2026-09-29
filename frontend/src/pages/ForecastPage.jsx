@@ -106,6 +106,8 @@ function ForecastPage() {
         badge={<SourceBadge kind="live" detail={d ? `updated ${ago(d.fetched_at)}` : fc.error ? "unavailable" : "loading"} />} />
       <Page>
         {fc.error && <div className="banner banner--error" role="alert"><span className="material-symbols-outlined" aria-hidden="true">cloud_off</span><div><strong>Live data unavailable.</strong> {fc.error.message}</div></div>}
+        {d?.relayed && <div className="banner" role="note"><span className="material-symbols-outlined" aria-hidden="true">swap_horiz</span><div><strong>Fetched through your browser.</strong> WEAVE’s server has hit Open-Meteo’s free request limit, so your browser downloaded this place’s raw model data from Open-Meteo directly and WEAVE blended it. The result is shown only to you and isn’t stored.</div></div>}
+        {fc.relaying && !d && !fc.error && <div className="banner" role="status"><span className="material-symbols-outlined" aria-hidden="true">swap_horiz</span><div><strong>Server busy with its data limit.</strong> Your browser is fetching the raw forecasts from Open-Meteo directly instead; this takes a little longer.</div></div>}
         {!d && !fc.error && (
           <>
             <div className="progress-note" role="status">

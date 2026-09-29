@@ -25,9 +25,12 @@ API instead (same model ID).
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timezone
 
 import httpx
@@ -171,6 +174,54 @@ def set_client(client: httpx.Client) -> None:
     _client = client
 
 
+# ---- Browser relay (fallback when this server's IP is rate-limited) ----
+# The browser fetches the exact URLs this server would have fetched and posts
+# the JSON back. Relayed bodies are untrusted: they are shape-checked, used for
+# that one request only, and never enter the shared cache, the skill cache or
+# any other place's results (see service.relay_forecast).
+_relay: ContextVar[dict | None] = ContextVar("weave_relay", default=None)
+RELAY_HOSTS = ("api.open-meteo.com", "previous-runs-api.open-meteo.com", "archive-api.open-meteo.com",
+               "ensemble-api.open-meteo.com")
+RELAY_MAX_ROWS = 20_000
+
+
+@contextmanager
+def relayed(responses: dict):
+    """Serve budgeted requests from `responses` (url -> JSON body, or None if
+    the browser could not fetch it); misses are collected in state['needs']."""
+    state = {"responses": responses, "needs": []}
+    token = _relay.set(state)
+    try:
+        yield state
+    finally:
+        _relay.reset(token)
+
+
+def relaying() -> bool:
+    return _relay.get() is not None
+
+
+def valid_relay_body(body: object) -> bool:
+    """Only the shape Open-Meteo returns for one location: hourly/daily blocks
+    of equal-length arrays of numbers (or null), plus a time column."""
+    if not isinstance(body, dict) or body.get("error") or len(body) > 50:
+        return False
+    blocks = [body[k] for k in ("hourly", "daily") if k in body]
+    if not blocks or not all(isinstance(b, dict) and "time" in b and len(b) <= 500 for b in blocks):
+        return False
+    for block in blocks:
+        n = len(block["time"]) if isinstance(block["time"], list) else -1
+        if not 0 < n <= RELAY_MAX_ROWS:
+            return False
+        for k, v in block.items():
+            if not isinstance(v, list) or len(v) != n:
+                return False
+            ok = (lambda x: isinstance(x, str) and len(x) <= 20) if k == "time" else                  (lambda x: x is None or (isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)))
+            if not all(map(ok, v)):
+                return False
+    return body.get("elevation") is None or isinstance(body["elevation"], (int, float))
+
+
 def _get(url: str, params: dict, kind: str, weight_factor: float = 1.0) -> tuple[object, float]:
     """GET with TTL cache; network errors and 5xx are retried with backoff
     (RETRY_WAITS), other errors are not. Returns (json, fetched_at_unix).
@@ -180,6 +231,15 @@ def _get(url: str, params: dict, kind: str, weight_factor: float = 1.0) -> tuple
     if hit:
         return hit[1], hit[0]
     if url != GEOCODE_URL and "meta.json" not in url:
+        relay = _relay.get()
+        if relay is not None:
+            if key not in relay["responses"]:
+                relay["needs"].append(key)
+                raise OpenMeteoError("Waiting for your browser to fetch this from Open-Meteo.")
+            body = relay["responses"][key]
+            if body is None:
+                raise OpenMeteoError("Your browser could not fetch this from Open-Meteo either.")
+            return body, time.time()
         p = paused()
         if p:
             resume = datetime.fromtimestamp(p["until"], timezone.utc).strftime("%H:%M UTC")

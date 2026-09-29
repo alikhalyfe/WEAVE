@@ -406,3 +406,41 @@ def test_keepalive_targets_render_url_and_stays_off_locally(monkeypatch):
 
     monkeypatch.setenv("WEAVE_KEEPALIVE", "0")
     assert service.keepalive_url() is None
+
+
+def test_browser_relay_is_a_fallback_that_never_touches_shared_state():
+    from src.api.main import app
+
+    client = TestClient(app)
+    where = {"lat": 21.15, "lon": 79.09, "name": "Nagpur"}
+    # Not allowed while the server can fetch the place itself.
+    assert client.post("/api/live/forecast/relay", json={**where, "responses": {}}).status_code == 409
+
+    openmeteo._block_after_429("Daily API request limit exceeded.")
+    browser = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        res = client.get("/api/live/forecast", params=where)
+        assert res.status_code == 503 and res.json()["detail"]["relay"] is True
+
+        responses, rounds = {}, 0
+        while True:
+            body = client.post("/api/live/forecast/relay", json={**where, "responses": responses}).json()
+            if "needs" not in body:
+                break
+            rounds += 1
+            assert rounds <= 4 and all(httpx.URL(u).host in openmeteo.RELAY_HOSTS for u in body["needs"])
+            server_calls = len(handler.calls)
+            responses.update({u: browser.get(u).json() for u in body["needs"]})
+            handler.calls = handler.calls[:server_calls]  # count only the server's own calls
+        assert body["relayed"] is True and set(body["variables"]) == {"temperature_2m_c", "precipitation_mm", "wind_speed_10m"}
+        assert not [h for h in handler.calls if h != "api.open-meteo.com"]  # server fetched nothing itself (meta.json aside)
+        assert not engine._skill_cache and not service._results  # untrusted data stored nowhere
+        assert not [k for k in cache._memory if k in responses]
+
+        # A tampered body is discarded, so that request is asked for again.
+        url = next(u for u in responses if "archive" in u)
+        bad = {**responses, url: {"hourly": {"time": ["2026-01-01T00:00"], "temperature_2m": ["hack"]}}}
+        assert url in client.post("/api/live/forecast/relay", json={**where, "responses": bad}).json()["needs"]
+    finally:
+        openmeteo._blocked.update(until=0.0, reason=None)
+        service._relay_allowed.clear()

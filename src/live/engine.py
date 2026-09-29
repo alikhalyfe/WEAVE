@@ -259,8 +259,21 @@ def skill_state(name: str, lat: float, lon: float) -> dict:
                 groups[(var, int(lead))] = g
         state = {"thresholds": thresholds, "regime_thresholds": regime_thr, "groups": groups,
                  "last_obs": last_obs, "computed_at": time.time()}
-        _skill_cache[key] = (time.time(), state)
+        if not openmeteo.relaying():  # browser-supplied data never reaches the shared cache
+            _skill_cache[key] = (time.time(), state)
         return state
+
+
+def relay_probe(name: str, lat: float, lon: float) -> None:
+    """Touch every independent request of live_forecast so a relay round
+    collects them together (dependent ones, like previous runs, follow once
+    ERA5 is in). Only meaningful inside openmeteo.relayed()."""
+    for call in (lambda: climatology(lat, lon), lambda: _history(name, lat, lon),
+                 lambda: openmeteo.forecast([(lat, lon)]), lambda: openmeteo.ensemble_daily(lat, lon)):
+        try:
+            call()
+        except openmeteo.OpenMeteoError:
+            pass
 
 
 def live_forecast(name: str, lat: float, lon: float) -> dict:

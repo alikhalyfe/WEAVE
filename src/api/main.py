@@ -19,9 +19,10 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from src.blending.operational import CONFIGS, METHODS, MODELS, blend_rows, skill_table
@@ -276,14 +277,72 @@ def live_forecast(lat: float, lon: float, name: str = Query("Selected place", ma
     """Adaptive blend of ECMWF IFS, NCEP GFS, DWD ICON, the ECMWF ensemble
     mean and ECMWF AIFS for the next ~7 days, with weights learned from this
     place's verified history; plus official warnings near the place."""
-    if not (INDIA_BOUNDS["lat"][0] <= lat <= INDIA_BOUNDS["lat"][1] and INDIA_BOUNDS["lon"][0] <= lon <= INDIA_BOUNDS["lon"][1]):
+    if not _in_india(lat, lon):
         raise HTTPException(422, "Live mode covers India only.")
-    payload = _live_call(service.forecast, name, lat, lon)
+    try:
+        payload = service.forecast(name, lat, lon)
+    except openmeteo.OpenMeteoError as exc:
+        # Fallback: the browser may fetch the raw data itself (POST .../relay).
+        service.allow_relay(lat, lon)
+        raise HTTPException(503, {"message": f"Upstream weather data unavailable: {exc}", "relay": True})
+    return _with_official(payload, lat, lon, state)
+
+
+def _in_india(lat, lon) -> bool:
+    return INDIA_BOUNDS["lat"][0] <= lat <= INDIA_BOUNDS["lat"][1] and INDIA_BOUNDS["lon"][0] <= lon <= INDIA_BOUNDS["lon"][1]
+
+
+def _with_official(payload: dict, lat: float, lon: float, state: str | None) -> dict:
     try:
         official = {"alerts": alerts.near(lat, lon, state), "error": None}
     except Exception as exc:  # official feed down: say so, forecast still served
         official = {"alerts": [], "error": f"Official alert feed unavailable: {exc}"}
     return _clean({**payload, "official_alerts": official, "attribution": ATTRIBUTION})
+
+
+RELAY_MAX_BYTES = 12_000_000
+RELAY_MAX_RESPONSES = 20
+
+
+@app.post("/api/live/forecast/relay")
+async def live_forecast_relay(request: Request):
+    """Fallback for when this server cannot reach Open-Meteo: the browser
+    fetches the Open-Meteo URLs listed in `needs` and posts the bodies back
+    ({name, lat, lon, state, responses: {url: body|null}}); the blend is
+    computed here and returned to that browser only, never cached. Accepted
+    only for a place whose normal forecast just failed."""
+    if int(request.headers.get("content-length") or 0) > RELAY_MAX_BYTES:
+        raise HTTPException(413, "Relay payload too large.")
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > RELAY_MAX_BYTES:
+            raise HTTPException(413, "Relay payload too large.")
+    try:
+        req = json.loads(raw)
+        lat, lon = float(req["lat"]), float(req["lon"])
+        name = str(req.get("name") or "Selected place")[:120]
+        state = str(req["state"])[:80] if req.get("state") else None
+        responses = req.get("responses") or {}
+        assert isinstance(responses, dict) and len(responses) <= RELAY_MAX_RESPONSES
+        assert all(isinstance(k, str) and len(k) <= 4000 for k in responses)
+    except (ValueError, KeyError, TypeError, AssertionError):
+        raise HTTPException(422, "Malformed relay request.")
+    if not _in_india(lat, lon):
+        raise HTTPException(422, "Live mode covers India only.")
+    if not service.relay_allowed(lat, lon):
+        raise HTTPException(409, "This server can fetch this place itself; use GET /api/live/forecast.")
+    try:
+        result = await run_in_threadpool(service.relay_forecast, name, lat, lon, responses)
+    except service.RelayBusy:
+        raise HTTPException(429, "Another relayed forecast is computing; try again in a few seconds.")
+    except openmeteo.OpenMeteoError as exc:
+        raise HTTPException(502, f"Could not build the forecast from the relayed data: {exc}")
+    except (KeyError, ValueError, TypeError, IndexError) as exc:
+        raise HTTPException(422, f"Relayed data did not match Open-Meteo's format: {exc}")
+    if "needs" in result:
+        return {"needs": result["needs"], "allowed_hosts": openmeteo.RELAY_HOSTS}
+    return _with_official(result, lat, lon, state)
 
 
 @app.get("/api/live/cities")

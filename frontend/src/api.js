@@ -7,7 +7,13 @@ const BASE = (import.meta.env.VITE_API_BASE || "").replace(/\/$/, "");
 export async function api(path, options) {
   const res = await fetch(BASE + "/api" + path, options);
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(typeof body.detail === "string" ? body.detail : body.detail ? JSON.stringify(body.detail) : res.statusText);
+  if (!res.ok) {
+    const d = body.detail;
+    const err = new Error(typeof d === "string" ? d : d?.message || (d ? JSON.stringify(d) : res.statusText));
+    err.status = res.status;
+    err.relay = d?.relay === true;
+    throw err;
+  }
   return body;
 }
 
