@@ -76,7 +76,14 @@ flowchart LR
 | `openmeteo.py` | HTTP client with TTL cache (`cache.py`) and a request budget based on Open-Meteo's own call weighting (`max(1, vars/10) × max(1, days/14)`). It waits out the per-minute limit and refuses cleanly past the hourly or daily budget. |
 | `engine.py` | Per place: 120 days of history split into fit, select (21 d) and evaluate (21 d) windows. The candidate (config × method, including best-single-model) is chosen on select and scored on evaluate, then refitted on everything. Skill state is cached 24 h. |
 | `service.py` | Result cache (30 min), background warm-up of the 24 tracked cities (2 threads), and headline summaries for the map. |
-| `cities.py` | Tracked city names and states. Coordinates always come from geocoding. |
+| `cities.py` | Tracked city names and states. Coordinates always come from geocoding, and resolution never crosses states. |
+| `outlook.py` | Plain-language daily wording, IMD rainfall categories and heat-wave rules, Beaufort wind wording |
+| `alerts.py` | Official CAP warnings from NDMA SACHET (IMD, CWC, SDMAs), matched to places by distance or state name |
+| `grid.py` | 124-point 1.5° India grid (Survey of India boundary, datameet CC-0), blended with weights borrowed from the nearest verified cities |
+
+Members: ECMWF IFS, NCEP GFS and DWD ICON (NWP), the ECMWF ENS mean (ensemble; its live run comes from the
+ensemble API), and ECMWF AIFS (AI). The 51 ensemble members also supply daily event probabilities.
+UKMO, JMA and GEM were tested as extra members and rejected (no held-out gain).
 
 Leads: Open-Meteo archives forecasts by lead **day** (`previous_dayN`), so the
 live leads are days 0–7. A valid time *h* hours ahead uses the weights for

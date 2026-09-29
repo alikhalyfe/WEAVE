@@ -1,164 +1,150 @@
-# WEAVE: Adaptive Weather Forecast Blending
+<p align="center"><img src="frontend/public/logo-192.png" width="96" alt="WEAVE logo"></p>
 
-A hybrid AI–NWP blending framework for India. WEAVE combines physics-based
-numerical weather prediction (**ECMWF IFS, NCEP GFS, DWD ICON**) with a
-machine-learned model (**ECMWF AIFS**) using **adaptive weights**. The weights
-are learned from each model's verified skill and conditioned on **place, lead
-time, season, weather regime and hour of day**. The output is an optimised
-forecast for **rainfall, temperature and wind**, with **extreme-weather
-guidance**, for any city or town in India.
+# WEAVE: Adaptive AI–NWP Forecast Blending for India
 
-It runs in two modes that share one blending engine:
+WEAVE blends five forecast systems into one forecast for any place in India:
 
-| | **Live** | **2025 replay (research)** |
-|---|---|---|
-| Members | ECMWF IFS, NCEP GFS, DWD ICON (NWP) + ECMWF AIFS (AI) | Persistence, Random Forest, gradient boosting |
-| Where | Any place in India (search), 24 tracked cities on the map | 5 Maharashtra ERA5 grid points |
-| Leads | Days 0–7, hourly | 6 / 12 / 24 h |
-| Truth | ERA5 (≈6-day lag) | ERA5 |
-| Data | Open-Meteo, fetched on demand and cached | Committed artifacts in `data/artifacts/` |
+- **Physics-based NWP:** ECMWF IFS, NCEP GFS and DWD ICON.
+- **Ensemble:** the ECMWF 51-member ensemble.
+- **AI model:** ECMWF AIFS.
 
-## Expected outcomes → where they live
+Adaptive weights are learned from each model's **verified skill** at that place and conditioned on **lead time, region, season, weather regime and hour of day**. The output is an optimised forecast for **rainfall, temperature and wind**, with **heat-wave, heavy-rain and high-wind guidance** and **official IMD/NDMA warnings**, all in plain language on a live dashboard.
 
-| Problem-statement outcome | Delivered by |
+## The problem statement, point by point
+
+| Requirement | Where it lives |
 |---|---|
-| **Dynamically blended forecast** | Live: `src/live/engine.py` blends the latest run of 4 models per place, variable and lead day. Replay: `src/blending/operational.py` does a rolling-origin blend of every 2025 forecast. |
-| **Model weight maps** | *Model Weights* page: India map of the most-trusted model per city and lead day, plus a city × lead grid. Replay: map and grid by location, lead time and season. |
-| **Improved forecast skill** | *Performance* page. Live: blend vs the best single model, scored on held-out days per city. Replay: 2025 MAE tables. |
-| **Extreme weather guidance** | *Extreme Events* page: heavy-rain, heat and high-wind days against each place's own ERA5 95th percentile for the date, with model agreement and verification. |
-| **Operational workflow** | Live refresh is automatic (cached, rate-budgeted Open-Meteo calls). Replay: `python -m src.workflow`. There is also a REST API and a blend tool. |
+| Physical NWP, ensemble and AI/ML forecasts may each have strengths | 5 live members: IFS, GFS, ICON (NWP), ECMWF ENS mean (ensemble), AIFS (AI). `src/live/openmeteo.py` |
+| Adaptive weights from historical skill, lead time, region, season, weather regime | Per place: 120 days of archived forecasts scored against ERA5. Weights per lead day 0–7, conditioned on season, weather regime and hour. `src/live/engine.py`, `src/blending/operational.py` |
+| **Dynamically blended forecast** (rain, temperature, wind) | Hourly 8-day blend for any place, a 1.5° blended field over all of India, and a plain-language daily outlook. *Overview* and *Forecast* pages |
+| **Model weight maps** by region and lead time | Regional most-trusted-model map for each lead day, plus a city × lead-day grid. *Model Weights* page, map layer on *Overview* |
+| **Improved forecast skill** vs individual models | Every blend is scored on held-out days it never trained on or selected from. *Performance* page |
+| **Extreme weather guidance** (heavy rain, heat wave, high wind) | IMD rainfall categories and heat-wave criteria on the blend, 51-member ensemble probabilities, and official NDMA SACHET warnings. *Warnings* page |
+| **Operational workflow** (automated routine blending) | A background refresh every 20 min, a rate-safe data layer and a JSON API. *Operations* page; replay pipeline via `python -m src.workflow` |
+
+## What you see
+
+- **Overview:**
+  - India forecast map on a 1.5° grid, in IMD rainfall categories and temperature and wind bands, inside the Survey of India boundary.
+  - Day scrubber with play, and a "most-trusted model" layer.
+  - Official warnings, the WEAVE hazard outlook, and every tracked city's day in words.
+- **Forecast:** search any Indian place.
+  - The week in plain language: "Light rain, around 4 mm. Chance of rain 92%. A light breeze, up to 11 km/h."
+  - Hazard chips and official warnings within 150 km.
+  - The detail: 7-day chart of all 5 models plus the blend, ensemble ranges, weights per day ahead, the held-out track record, and accuracy by lead day.
+- **Model Weights:** the regional weight map and the city × lead-day dominant-model grid.
+- **Performance:** blend vs best single model, per city and lead day, plus the 2025 replay skill.
+- **Warnings:** official NDMA SACHET warnings (IMD, CWC, state SDMAs, relayed verbatim), WEAVE's heat-wave, heavy-rain and high-wind signals, and their verification.
+- **Operations:** the pipeline, refresh loop, API budget and data freshness.
+- **2025 Replay / Blend Tool / Method & Data:** the research archive, manual blending, and the method, sources and limitations.
 
 ## How the live blend works
 
-For each place (`src/live/engine.py`):
+1. **Skill history.** Open-Meteo archives what each model forecast 0–7 days ahead. WEAVE pairs 120 days of those forecasts with ERA5 at the place.
+2. **Honest selection.** 15 candidates are tried: 5 weighting methods (equal, inverse-MAE, inverse-MSE, NNLS stacking, best single model) × 3 conditioning setups (regime; regime with bias correction; hour of day with bias correction).
+   - They're fitted on the oldest days, **chosen** on the next 21 days, and **scored** on the latest 21 days.
+   - Only that final score is reported.
+3. **Blend.** The chosen weights combine the latest runs. A model missing an hour is dropped and the rest renormalised; nothing is filled in.
+4. **Words and warnings.**
+   - IMD rain categories: heavy ≥ 64.5 mm/day.
+   - IMD heat-wave criteria: ≥ 40 °C in the plains, or ≥ 30 °C in the hills, and at least 4.5 °C above normal.
+   - Beaufort wind wording, and chance of rain = share of the 51 ensemble members with ≥ 1 mm.
+   - **Warning** = the blend meets the rule; **watch** = at least 30% of ensemble members do.
+5. **India grid.** 124 points inside the boundary, blended with weights borrowed from the nearest verified cities (inverse distance). That is the regional weight map.
 
-1. **Skill history.** Open-Meteo archives what each model forecast 0–7 days
-   ahead. WEAVE pairs 120 days of those archived forecasts with ERA5 at the
-   place.
-2. **Honest windows.** The oldest days fit every candidate weighting: 5
-   methods (equal, inverse-MAE, inverse-MSE, NNLS-optimal, best single model)
-   × 3 conditioning setups (with and without bias correction, with and without
-   hour-of-day). The next 21 days pick one candidate. The latest 21 days, never
-   used for fitting or picking, **score** it. Those scores are what the site
-   reports.
-3. **Adaptive weights.** Weights are per lead day. Within each lead day they
-   depend on season, weather regime (forecast by the members) and hour of day,
-   falling back to broader groups when data is thin. A model with no forecast
-   for an hour is dropped and the others renormalised; nothing is filled in.
-4. **Extremes.** A day is extreme when the blended daily max temperature, rain
-   total or max wind reaches the 95th percentile of the same ±15 days of year
-   over the place's last 2 years of ERA5. Agreement is the weighted share of
-   bias-corrected models that also reach it.
+### Live results (24 cities × 8 lead days, held-out window, five members)
 
-### Live results (24 cities × 8 lead days, held-out window 2–23 Sep 2026)
+| Variable | Blend beats best single model | Median gain vs best model | Median gain vs simple average |
+|---|---|---|---|
+| Temperature | 154 / 192 (80%) | **+17.6%** | +23.8% |
+| Wind | 165 / 192 (86%) | **+11.9%** | +7.5% |
+| Rainfall | 75 / 192 (39%) | −2.7% | +3.4% |
 
-Blend MAE vs the best single model at each city and lead day:
+Rainfall is the honest weak spot: it's zero-inflated, and the scoring window covered the monsoon withdrawal.
 
-| Variable | Blend beats best model | Median MAE reduction |
+### Tested and rejected
+
+- **UK Met Office, JMA and GEM as extra members.** Held-out blend error changed by −0.6% (temperature), +0.4% (rain) and −0.2% (wind) at the median. That's no gain, so they're not used.
+- **Rain without bias correction.** It made rain worse (49/192 wins).
+- **Hourly "unusual" thresholds.** They flagged ordinary afternoon peaks, so extremes are judged per day.
+
+## 2025 replay (research archive, fully out-of-sample)
+
+Three trained members at 5 Maharashtra ERA5 points: persistence, random forest and gradient boosting.
+
+- **Features:** the "same hour yesterday" lag (18 h), 24-hour rolling statistics, and cyclic time features.
+- **Tuning:** gradient-boosting hyperparameters were chosen on 2023 only (`src/models/tuning.py`). A candidate that predicted a constant 0 mm of rain scored a lower MAE but was rejected as degenerate.
+- **Blend settings:** chosen on a 2024 hindcast, then frozen for 2025.
+
+| Variable | Lead | Persistence | Random Forest | AI (GBT) | **WEAVE blend** | vs best model |
+|---|---|---|---|---|---|---|
+| Rainfall (mm/h) | 6h | 0.2083 | 0.1810 | 0.1782 | **0.1750** | **+1.8%** |
+| | 12h | 0.2369 | 0.2008 | 0.1951 | **0.1912** | **+2.0%** |
+| | 24h | 0.2307 | 0.2063 | 0.2036 | **0.1958** | **+3.9%** |
+| Temperature (°C) | 6h | 3.7848 | 0.7130 | 0.6427 | 0.6431 | −0.1% |
+| | 12h | 5.3993 | 0.7773 | 0.7339 | 0.7347 | −0.1% |
+| | 24h | 0.8301 | 0.8114 | 0.7998 | **0.7958** | **+0.5%** |
+| Wind (m/s) | 6h | 0.8783 | 0.5223 | 0.5087 | 0.5097 | −0.2% |
+| | 12h | 1.0030 | 0.5765 | 0.5646 | 0.5654 | −0.1% |
+| | 24h | 0.6747 | 0.6192 | 0.6150 | **0.6083** | **+1.1%** |
+
+Tuning cut temperature 6h error by 15% (0.756 → 0.643 °C). The tuned AI member is now so strong that for temperature and wind the blend mostly defers to it, which is why the margin over the best single model is near zero. Rain at 12 and 24 h got slightly worse in absolute terms after tuning.
+
+Extreme events at 6h (CSI, higher is better):
+
+| Event | Before tuning | After tuning |
 |---|---|---|
-| Temperature | 154 / 192 (80%) | **+18.3%** |
-| Wind speed | 174 / 192 (91%) | **+13.0%** |
-| Rainfall | 77 / 192 (40%) | −2.6% |
+| Heat | 0.50 | **0.65** |
+| Heavy rain | 0.19 | **0.20** |
+| High wind | 0.35 | **0.39** |
 
-Rainfall is the honest weak spot. It is zero-inflated and the scoring window
-covered the monsoon withdrawal, so weights learned on wetter weeks transfer
-poorly. Turning off bias correction for rain was tested and made it worse
-(49/192), so all candidates stay and the site shows these numbers as they are.
-Results refresh as the window rolls forward.
-
-Live extreme-day check (day-1 forecasts, 480 city-days): heat POD 47% / FAR
-21%; heavy rain POD 17% / FAR 78%; high wind 0 of 8 events detected. Extreme
-days are rare, so treat these as a sanity check. The replay year below has the
-statistically meaningful numbers.
-
-## 2025 replay results (fully out-of-sample)
-
-Models were trained on 2021–2024. Every blending choice was made on a 2024
-hindcast and then frozen.
-
-| Variable | Lead | Persistence | Random Forest | AI (GBT) | Simple mean | **WEAVE blend** | vs best model |
-|---|---|---|---|---|---|---|---|
-| Rainfall (mm/h) | 6h | 0.2083 | 0.1817 | 0.1785 | 0.1813 | **0.1766** | **+1.1%** |
-| | 12h | 0.2369 | 0.1958 | 0.1898 | 0.1971 | **0.1880** | **+0.9%** |
-| | 24h | 0.2307 | 0.2036 | 0.1991 | 0.2014 | **0.1933** | **+2.9%** |
-| Temperature (°C) | 6h | 3.7848 | 0.7650 | 0.7794 | 1.4775 | **0.7563** | **+1.1%** |
-| | 12h | 5.3993 | 0.7811 | 0.7594 | 1.9470 | 0.7611 | −0.2% |
-| | 24h | 0.8301 | 0.8122 | 0.8125 | 0.7994 | **0.7992** | **+1.6%** |
-| Wind (m/s) | 6h | 0.8783 | 0.5562 | 0.5640 | 0.6049 | **0.5383** | **+3.2%** |
-| | 12h | 1.0030 | 0.5777 | 0.5779 | 0.6400 | **0.5676** | **+1.8%** |
-| | 24h | 0.6747 | 0.6167 | 0.6243 | 0.6123 | **0.6120** | **+0.8%** |
-
-Extreme events, 12h lead, critical success index: heavy rain 0.148 vs the best
-raw model's 0.147; high wind **0.338 vs 0.213**; heat **0.627 vs 0.620**.
-
-## Run it locally
+## Run it
 
 ```bash
 python -m venv venv && venv/Scripts/activate      # Windows (source venv/bin/activate elsewhere)
 pip install -r requirements.txt
-uvicorn src.api.main:app                          # API on http://127.0.0.1:8000
+uvicorn src.api.main:app                          # API + background refresh on :8000
 
-cd frontend && npm install
-npm run dev                                       # http://localhost:5173 (proxies /api)
+cd frontend && npm install && npm run dev         # dashboard on :5173 (proxies /api)
+# or npm run build: the API then serves the dashboard itself at :8000
 ```
 
-No setup is needed for live mode: no key and no training. The committed
-`data/artifacts/` serve the replay. To regenerate the replay, run
-`python -m src.workflow` (about 2 min, or about 12 min with `--retrain`).
-
-Tests: `pytest` runs 86 tests, including live mode against a mocked Open-Meteo,
-leakage guards, blending, guidance and the API.
+- No keys and no training are needed for live mode. The committed `data/artifacts/` serve the replay.
+- Rebuild the replay with `python -m src.models.tuning && python -m src.workflow --retrain` (about 15 min).
+- Tests: `pytest` runs 94 tests, including live mode against a mocked Open-Meteo, SACHET parsing, IMD rules, leakage guards and the API.
 
 ## Deploy (Render API + Vercel frontend)
 
-1. **Render.** New → Blueprint → this repo. `render.yaml` defines the `weave-api`
-   web service. Set `ALLOWED_ORIGINS` to the Vercel URL, e.g.
-   `https://weave.vercel.app`.
-2. **Vercel.** Import the repo with **root directory `frontend`**. Add the env var
-   `VITE_API_BASE=https://<your-render-service>.onrender.com`.
-   `frontend/vercel.json` handles SPA routing.
-3. Open the Vercel URL. The first visit after the free Render instance sleeps
-   takes about 30–60 s to wake. Each new city takes about 5–15 s the first time
-   while WEAVE learns its model skill, then it's cached.
+1. **Render:** New → Blueprint → this repo (`render.yaml`). Set `ALLOWED_ORIGINS` to the Vercel URL.
+2. **Vercel:** import with root directory `frontend`, and set `VITE_API_BASE=https://<render-service>.onrender.com`.
+3. **Cold starts:** the free Render tier sleeps. The first visit wakes it (about 30–60 s) and the refresher then warms the 24 cities and the grid.
 
-**Fair use.** Open-Meteo's free tier is non-commercial, with a budget of 600
-units per minute, 5,000 per hour and 10,000 per day. Heavy requests count as
-multiple units. WEAVE weighs every request with Open-Meteo's own formula,
-waits out the per-minute limit, and returns a clear error rather than exceed
-the hourly or daily budget. A new place costs about 145 units once, and cached
-places are close to free. Attribution: *Weather data by Open-Meteo.com (CC BY
-4.0)*, which is shown on every page.
+**Fair use.** Open-Meteo's free tier is non-commercial, with a budget of 600 units per minute, 5,000 per hour and 10,000 per day. WEAVE weighs every request with Open-Meteo's own formula, waits out the per-minute limit, and refuses cleanly before the hourly or daily limit. A steady day uses roughly 6,000 units.
+
+## Data sources and licences
+
+| Source | Licence |
+|---|---|
+| Open-Meteo: ECMWF IFS, ENS and AIFS, NOAA GFS, DWD ICON, ERA5 | CC BY 4.0 |
+| NDMA SACHET, official warnings | Public domain |
+| India boundary: datameet `india-composite` (Survey of India claim) | CC-0 |
+| Basemap | © OpenStreetMap contributors |
 
 ## Project structure
 
 | Path | Contents |
 |---|---|
-| `src/live/` | Open-Meteo client and budget, cache, live engine, city service |
-| `src/blending/` | Weight engine (inverse error, NNLS), single-case and operational blenders |
-| `src/regime/` | Vectorized regime classification |
-| `src/evaluation/` | Metrics, skill tables, extreme-event verification and guidance |
-| `src/models/`, `src/data_pipeline/`, `ai/` | Replay members, ERA5 pipeline, regime calibration |
-| `src/workflow.py` | Replay workflow → `data/artifacts/` |
+| `src/live/` | Open-Meteo client and budget, cache, engine, outlook/IMD rules, SACHET alerts, India grid, refresh service |
+| `src/blending/` | Weight engine (inverse error, NNLS, best member), operational blender |
+| `src/models/` | Replay members, leak-free tuning, forecast generation |
+| `src/evaluation/`, `src/regime/`, `src/data_pipeline/`, `ai/` | Verification, regimes, ERA5 pipeline |
 | `src/api/main.py` | FastAPI: `/api/live/*`, replay endpoints, `POST /api/blend`, SPA |
 | `frontend/` | React + Vite: routed pages, Leaflet maps, Motion animations |
-| `docs/` | Architecture, data schema |
+| `data/geo/`, `data/artifacts/` | India boundary; published replay artifacts |
 
 ## Limitations
 
-- Values are for the model grid cell (about 9–28 km), not a street-level station.
-- ERA5 is about 6 days behind, so weights learn from forecasts that verified up
-  to a week ago.
-- Live leads are whole days, because Open-Meteo archives forecasts by lead day.
-- "Heat" means unusually hot for the date and place (daily-max 95th
-  percentile), not IMD's official heat-wave criteria.
-- Open-Meteo's free tier is non-commercial.
-
-## Team
-
-| Module | Owner |
-|---|---|
-| Data Pipeline | Member 1 |
-| Adaptive Blending | Member 2 |
-| Weather Regime | Member 3 |
-| Evaluation | Member 4 |
-| Dashboard | Member 5 |
+- **Grid cells, not stations:** values are for a model grid cell (about 9–28 km). ERA5 truth lags about 6 days.
+- **Grid-map weights are borrowed:** they come from the nearest verified cities and have no local bias correction. City pages have both.
+- **Heat-wave "normal":** it is the ERA5 average of the last 2 years, not IMD's 30-year station normals, and the coastal heat-wave rule isn't applied.
+- **Official warnings come first:** they're relayed verbatim, and WEAVE's guidance never overrides them.
