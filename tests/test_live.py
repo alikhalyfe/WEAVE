@@ -8,6 +8,7 @@ single-model responses carry no model suffix and multi-location requests
 return a list.
 """
 
+import time
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
@@ -334,6 +335,32 @@ def test_seeded_climatology_is_used_when_recent(monkeypatch):
     stale = {"climatology": {seed_mod.key(18.52, 73.86): {"through": (end - td(days=200)).isoformat(), "thresholds": rows}}}
     monkeypatch.setattr(seed_mod, "load", lambda: stale)
     assert not engine.climatology(18.52, 73.86)["temperature_2m_c"].eq(30.0).all()  # too old: fetched live
+
+
+def test_snapshot_is_served_without_recomputing_and_survives_upstream_failures(monkeypatch):
+    payload = engine.live_forecast("Pune", 18.52, 73.86)
+    service._results.clear()
+    service._from_snapshot.clear()
+    service._grid.update(at=0.0, payload=None, error=None, building=False, sources=0, from_snapshot=False)
+    now = time.time()
+    snap = {"generated_at": now - 3600, "cities": [{"label": "Pune, Maharashtra", "computed_at": now - 3600,
+            "place": {"name": "Pune", "state": "Maharashtra", "latitude": 18.52, "longitude": 73.86}, "payload": payload}],
+            "grid": {"dates": [], "cells": [], "weight_sources": ["Pune"], "note": "n", "fetched_at": None}}
+    assert service.merge_snapshot(snap)
+
+    def boom(*a, **k):
+        raise AssertionError("must not recompute a fresh published result")
+    monkeypatch.setattr(engine, "live_forecast", boom)
+    assert service.forecast("Pune", 18.52, 73.86) is payload  # an hour old, but published: fresh
+    assert service.grid_field()["status"] == "ready"           # map served straight from the snapshot
+
+    # Past the freshness window, a failed recompute falls back to the snapshot instead of erroring.
+    service._results[service._key(18.52, 73.86)] = (now - 5 * 3600, payload)
+
+    def blocked(*a, **k):
+        raise openmeteo.OpenMeteoError("Open-Meteo 429: Daily API request limit exceeded.")
+    monkeypatch.setattr(engine, "live_forecast", blocked)
+    assert service.forecast("Pune", 18.52, 73.86) is payload
 
 
 def test_keepalive_targets_render_url_and_stays_off_locally(monkeypatch):

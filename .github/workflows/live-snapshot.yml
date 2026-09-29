@@ -1,0 +1,55 @@
+# Routine blending: compute the 24 tracked cities and the India map on
+# GitHub's runners every 3 hours and publish them to the `live-data` branch.
+# The API (src/live/service.py load_snapshot) serves this file, so the live
+# site does not depend on its host's shared IP having Open-Meteo allowance.
+name: Live snapshot
+
+on:
+  schedule:
+    - cron: "17 */3 * * *"   # every 3 hours, off the hour
+  workflow_dispatch:          # "Run workflow" button for an immediate refresh
+
+permissions:
+  contents: write            # push the snapshot to the live-data branch
+
+concurrency:
+  group: live-snapshot
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # Reuse downloads between runs (skill history is cached for 24 h), so a
+      # routine run costs ~800 Open-Meteo units instead of ~4,800.
+      - uses: actions/cache@v4
+        with:
+          path: data/live_cache
+          key: live-cache-${{ github.run_id }}
+          restore-keys: live-cache-
+
+      - name: Compute cities and India grid
+        env:
+          WEAVE_BACKGROUND: "0"
+        run: python -m src.live.publish out/live.json.gz
+
+      - name: Publish to the live-data branch
+        run: |
+          cd out
+          git init -q -b live-data
+          git config user.name "weave-snapshot[bot]"
+          git config user.email "weave-snapshot@users.noreply.github.com"
+          printf 'Published by .github/workflows/live-snapshot.yml; served by the WEAVE API.\n' > README.md
+          git add live.json.gz README.md
+          git commit -q -m "Live snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" live-data

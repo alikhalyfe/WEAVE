@@ -29,3 +29,7 @@ data/processed/*
 Thumbs.db
 # Live-mode Open-Meteo response cache
 data/live_cache/
+
+# Live snapshot output (published to the live-data branch)
+data/snapshot/
+out/

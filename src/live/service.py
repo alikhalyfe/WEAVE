@@ -10,6 +10,8 @@ the dashboard stays current without anyone running a script.
 
 from __future__ import annotations
 
+import gzip
+import json
 import os
 import threading
 import time
@@ -25,6 +27,13 @@ GRID_TTL = 15 * 60
 GRID_REBUILD_MIN = 90       # seconds between rebuilds as new cities finish
 GRID_RETRY = 60             # retry a failed first build after this long
 CITY_COST = 190             # Open-Meteo units a cold city can cost (worst case)
+
+# Published snapshot (src/live/publish.py, run every 3 h by GitHub Actions).
+# Results loaded from it count as fresh for SNAPSHOT_FRESH, so the server
+# does not spend its own (possibly exhausted) Open-Meteo allowance redoing them.
+SNAPSHOT_URL = os.environ.get("SNAPSHOT_URL", "https://raw.githubusercontent.com/alikhalyfe/WEAVE/live-data/live.json.gz")
+SNAPSHOT_FRESH = 4 * 3600
+STALE_FALLBACK = 12 * 3600  # serve a result this old rather than an error when recomputing fails
 _results: dict[tuple, tuple[float, dict]] = {}
 _errors: dict[str, tuple[float, str]] = {}
 _pending: set[str] = set()
@@ -33,6 +42,8 @@ _lock = threading.Lock()
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="weave-live")
 _grid: dict = {"at": 0.0, "payload": None, "error": None, "building": False, "sources": 0}
 _grid_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="weave-grid")  # never queued behind cities
+_from_snapshot: set[tuple] = set()
+_snapshot = {"url": SNAPSHOT_URL, "generated_at": None, "loaded_at": None, "cities": 0, "error": None}
 _refresher = {"started": None, "runs": 0, "last_run": None, "last_error": None}
 
 
@@ -40,15 +51,64 @@ def _key(lat: float, lon: float) -> tuple:
     return round(lat, 3), round(lon, 3)
 
 
+def _fresh(key: tuple, hit) -> bool:
+    ttl = SNAPSHOT_FRESH if key in _from_snapshot else RESULT_TTL
+    return bool(hit) and time.time() - hit[0] < ttl
+
+
 def forecast(name: str, lat: float, lon: float) -> dict:
-    """Live blend for a place, recomputed at most every RESULT_TTL."""
+    """Live blend for a place, recomputed at most every RESULT_TTL (or
+    SNAPSHOT_FRESH for published results). If recomputing fails (e.g.
+    Open-Meteo limits), a result up to STALE_FALLBACK old is served instead;
+    its own timestamps show its age."""
     key = _key(lat, lon)
     hit = _results.get(key)
-    if hit and time.time() - hit[0] < RESULT_TTL:
+    if _fresh(key, hit):
         return hit[1]
-    payload = engine.live_forecast(name, lat, lon)
+    try:
+        payload = engine.live_forecast(name, lat, lon)
+    except openmeteo.OpenMeteoError:
+        if hit and time.time() - hit[0] < STALE_FALLBACK:
+            return hit[1]
+        raise
     _results[key] = (time.time(), payload)
+    _from_snapshot.discard(key)
     return payload
+
+
+def load_snapshot() -> bool:
+    """Merge the published snapshot: any city or grid newer than what this
+    server has. Returns True if something was loaded."""
+    if not SNAPSHOT_URL or SNAPSHOT_URL == "0":
+        return False
+    try:
+        with httpx.Client(timeout=60, follow_redirects=True) as client:
+            res = client.get(SNAPSHOT_URL)
+            res.raise_for_status()
+        snap = json.loads(gzip.decompress(res.content))
+    except Exception as exc:  # no snapshot yet / network: carry on computing locally
+        _snapshot["error"] = str(exc)
+        return False
+    return merge_snapshot(snap)
+
+
+def merge_snapshot(snap: dict) -> bool:
+    loaded = 0
+    for entry in snap.get("cities", []):
+        place = entry["place"]
+        key = _key(place["latitude"], place["longitude"])
+        _resolved.setdefault(entry["label"], place)
+        current = _results.get(key)
+        if not current or current[0] < entry["computed_at"]:
+            _results[key] = (entry["computed_at"], entry["payload"])
+            _from_snapshot.add(key)
+            _errors.pop(entry["label"], None)
+            loaded += 1
+    if snap.get("grid") and snap["generated_at"] > _grid["at"]:
+        _grid.update(at=snap["generated_at"], payload=snap["grid"], error=None, sources=len(snap.get("cities", [])), from_snapshot=True)
+        loaded += 1
+    _snapshot.update(generated_at=snap.get("generated_at"), loaded_at=time.time(), cities=len(snap.get("cities", [])), error=None)
+    return loaded > 0
 
 
 def summarise(payload: dict) -> dict:
@@ -112,7 +172,7 @@ def overview() -> dict:
         label = f"{name}, {state}"
         place = _resolved.get(label)
         hit = _results.get(_key(place["latitude"], place["longitude"])) if place else None
-        fresh = hit and time.time() - hit[0] < RESULT_TTL
+        fresh = place is not None and _fresh(_key(place["latitude"], place["longitude"]), hit)
         err = _errors.get(label)
         retry_error = err and time.time() - err[0] > 300
         with _lock:
@@ -156,7 +216,7 @@ def _build_grid() -> None:
     try:
         sources = weight_sources()
         payload = grid.build(sources)
-        _grid.update(at=time.time(), payload=payload, error=None, sources=len(sources))
+        _grid.update(at=time.time(), payload=payload, error=None, sources=len(sources), from_snapshot=False)
     except Exception as exc:  # shown on the map, never hidden
         _grid.update(error=str(exc), at=time.time())
     finally:
@@ -168,10 +228,11 @@ def grid_field() -> dict:
     are learned), rebuilt as more cities finish and when older than GRID_TTL."""
     with _lock:
         age = time.time() - _grid["at"]
+        published = _grid.get("from_snapshot", False)
         stale = (
             (_grid["payload"] is None and (age > GRID_RETRY or _grid["at"] == 0))
-            or age > GRID_TTL
-            or (len(_results) > _grid["sources"] and age > GRID_REBUILD_MIN)
+            or age > (SNAPSHOT_FRESH if published else GRID_TTL)
+            or (not published and len(_results) > _grid["sources"] and age > GRID_REBUILD_MIN)
         )
         if stale and not _grid["building"]:
             _grid["building"] = True
@@ -185,7 +246,8 @@ def grid_field() -> dict:
 def _refresh_loop() -> None:
     while True:
         try:
-            grid_field()  # the map first: it needs no learned skill to appear
+            load_snapshot()  # published results first: no Open-Meteo calls from this server
+            grid_field()     # then the map: it needs no learned skill to appear
             overview()
             _refresher.update(runs=_refresher["runs"] + 1, last_run=time.time(), last_error=None)
         except Exception as exc:
@@ -269,5 +331,6 @@ def status() -> dict:
                  "built_minutes_ago": round((now - _grid["at"]) / 60, 1) if _grid["payload"] else None},
         "official_alerts": sachet_info,
         "open_meteo_paused": openmeteo.paused(),
+        "snapshot": {**_snapshot, "age_minutes": round((now - _snapshot["generated_at"]) / 60, 1) if _snapshot["generated_at"] else None},
         "ttl_seconds": openmeteo.TTL,
     }

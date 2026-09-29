@@ -119,7 +119,12 @@ cd frontend && npm install && npm run dev         # open http://localhost:5173 (
 
 1. **Render:** New → Blueprint → this repo (`render.yaml`). `https://weave-eosin-three.vercel.app` (and its previews) is allowed by default; add other frontend URLs to `ALLOWED_ORIGINS`.
 2. **Vercel:** import with root directory `frontend`, and set `VITE_API_BASE=https://<render-service>.onrender.com`.
-3. **Staying awake:** Render's free tier sleeps after about 15 minutes without incoming traffic, and waking means relearning every city and rebuilding the map.
+3. **Published snapshot (why the deployed map works):** Open-Meteo counts its free limits per IP address, and hosting providers' shared IPs can exhaust them. On Render that meant "Daily API request limit exceeded" after WEAVE itself had used about 1,250 units.
+   - **Where it's computed:** `.github/workflows/live-snapshot.yml` runs `python -m src.live.publish` on GitHub's machines every 3 hours. It publishes the 24 cities and the India map to the `live-data` branch.
+   - **How the API uses it:** it loads the file at startup and every 20 minutes, treats it as fresh for 4 hours, and falls back to the last good result if a live recompute fails.
+   - **Settings:** point `SNAPSHOT_URL` elsewhere, or set it to `0` to turn this off.
+   - **Refreshing now:** trigger an immediate refresh from the repo's **Actions → Live snapshot → Run workflow**.
+4. **Staying awake:** Render's free tier sleeps after about 15 minutes without incoming traffic, and waking means relearning every city and rebuilding the map.
    - **Self-ping:** the API pings its own public `/api/health` every 10 minutes, using `RENDER_EXTERNAL_URL`, which Render sets automatically. It never runs locally.
    - **Monthly hours:** one always-on free service uses about 744 of Render's 750 free instance hours a month.
    - **Turning it off:** set `WEAVE_KEEPALIVE=0`.
