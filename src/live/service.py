@@ -1,9 +1,11 @@
-"""Caching + background refresh around the live engine, for the API.
+"""Caching + the operational refresh loop around the live engine.
 
 Results for a place are reused for RESULT_TTL (the member forecasts
-themselves only change every ~6h). The overview map computes the tracked
-cities in a small thread pool and reports honest per-city status
-(ready / pending / error) instead of blocking or guessing.
+themselves only change every ~6h). The tracked cities are computed in a
+small thread pool with honest per-city status (ready / pending / error).
+start_refresher() runs the routine workflow in the background: every
+REFRESH_SECONDS it re-blends stale cities and rebuilds the India grid, so
+the dashboard stays current without anyone running a script.
 """
 
 from __future__ import annotations
@@ -12,15 +14,19 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from src.live import cities, engine, openmeteo
+from src.live import alerts, cities, engine, grid, openmeteo
 
 RESULT_TTL = 30 * 60
+REFRESH_SECONDS = 20 * 60
+GRID_TTL = 15 * 60
 _results: dict[tuple, tuple[float, dict]] = {}
 _errors: dict[str, tuple[float, str]] = {}
 _pending: set[str] = set()
 _resolved: dict[str, dict | None] = {}
 _lock = threading.Lock()
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="weave-live")
+_grid: dict = {"at": 0.0, "payload": None, "error": None, "building": False}
+_refresher = {"started": None, "runs": 0, "last_run": None, "last_error": None}
 
 
 def _key(lat: float, lon: float) -> tuple:
@@ -65,12 +71,13 @@ def summarise(payload: dict) -> dict:
             for day, v in sorted(by_day.items()) if "blended" in v
         ]
         out.setdefault("verification", {})[var] = d["event_verification"]
-        for day in d["days"][:3]:  # today (IST) and the next two days
-            if day["event"]:
-                out["alerts"].append({
-                    "target_variable": var, "date": day["date"], "value": day["blended"], "threshold": day["threshold"],
-                    "probability": day["probability"], "complete": day["complete"], "first_hour_ist": day["first_hour_ist"],
-                })
+    # Hazards for today and the next two IST days, from the plain-language outlook.
+    for day in payload.get("outlook", [])[:3]:
+        for h in day["hazards"]:
+            out["alerts"].append({"type": h["type"], "level": h["level"], "label": h["label"], "date": day["date"],
+                                  "day_label": day["label"], "probability": h["probability"], "sentence": h["sentence"]})
+    out["outlook"] = [{k: d[k] for k in ("date", "label", "icon", "headline", "high", "low", "rain_mm", "rain_chance", "wind_kmh")}
+                      for d in payload.get("outlook", [])[:3]]
     return out
 
 
@@ -118,3 +125,92 @@ def overview() -> dict:
         items.append(item)
     ready = sum(i["status"] == "ready" for i in items)
     return {"cities": items, "ready": ready, "total": len(items)}
+
+
+def weight_sources() -> list[dict]:
+    """Verified cities and their mean weights per variable and lead day,
+    for the grid's regional weighting."""
+    out = []
+    for (lat, lon), (_, payload) in list(_results.items()):
+        weights = {}
+        for var, d in payload["variables"].items():
+            weights[var] = {}
+            for day in sorted({p["lead_day"] for p in d["points"]}):
+                ws = [p["weights"] for p in d["points"] if p["lead_day"] == day]
+                weights[var][str(day)] = {m: sum(w.get(m) or 0 for w in ws) / len(ws) for m in ws[0]}
+        out.append({"name": payload["place"]["name"], "latitude": lat, "longitude": lon, "weights": weights})
+    return out
+
+
+def _build_grid() -> None:
+    try:
+        payload = grid.build(weight_sources())
+        _grid.update(at=time.time(), payload=payload, error=None)
+    except Exception as exc:  # shown on the map, never hidden
+        _grid.update(error=str(exc), at=time.time())
+    finally:
+        _grid["building"] = False
+
+
+def grid_field() -> dict:
+    """Latest India grid. Rebuilt in the background when older than
+    GRID_TTL; returns status 'building' until the first one exists."""
+    with _lock:
+        stale = time.time() - _grid["at"] > GRID_TTL
+        if stale and not _grid["building"] and _results:
+            _grid["building"] = True
+            _pool.submit(_build_grid)
+    if _grid["payload"] is None:
+        return {"status": "building" if _grid["building"] or not _results else "error", "error": _grid["error"],
+                "note": "The grid appears once at least one city's model skill has been learned."}
+    return {"status": "ready", **_grid["payload"], "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(_grid["at"]))}
+
+
+def _refresh_loop() -> None:
+    while True:
+        try:
+            overview()
+            grid_field()
+            _refresher.update(runs=_refresher["runs"] + 1, last_run=time.time(), last_error=None)
+        except Exception as exc:
+            _refresher["last_error"] = str(exc)
+        time.sleep(REFRESH_SECONDS)
+
+
+def start_refresher() -> None:
+    """Idempotent: starts the routine refresh thread once per process."""
+    with _lock:
+        if _refresher["started"]:
+            return
+        _refresher["started"] = time.time()
+    threading.Thread(target=_refresh_loop, name="weave-refresher", daemon=True).start()
+
+
+def status() -> dict:
+    """Operational status for the Operations page."""
+    now = time.time()
+    b = openmeteo.budget
+    with b.lock:
+        used = {label: round(sum(w for t, w in b.spent if now - t < win), 1) for label, win in (("minute", 60), ("hour", 3600), ("day", 86400))}
+    ov = overview()
+    ages = [now - t for t, _ in _results.values()]
+    try:
+        sachet = alerts.fetch()
+        sachet_info = {"active": len(sachet["alerts"]), "fetched_at": sachet["fetched_at"], "age_seconds": sachet["age_seconds"]}
+    except Exception as exc:
+        sachet_info = {"error": str(exc)}
+    return {
+        "refresher": {**_refresher, "interval_seconds": REFRESH_SECONDS,
+                      "next_run_in_seconds": max(0, round(REFRESH_SECONDS - (now - _refresher["last_run"]))) if _refresher["last_run"] else None},
+        "budget": {"used": used, "limits": {"minute": openmeteo.BUDGET[60], "hour": openmeteo.BUDGET[3600], "day": openmeteo.BUDGET[86400]},
+                   "note": "Counted by this server since it started, using Open-Meteo's own call weighting."},
+        "cities": {"ready": ov["ready"], "total": ov["total"], "errors": sum(c["status"] == "error" for c in ov["cities"])},
+        "places_cached": len(_results),
+        "oldest_result_minutes": round(max(ages) / 60, 1) if ages else None,
+        "skill_cache": len(engine._skill_cache),
+        "grid": {"status": "ready" if _grid["payload"] else "building" if _grid["building"] else "not built",
+                 "cells": len(_grid["payload"]["cells"]) if _grid["payload"] else 0,
+                 "built_minutes_ago": round((now - _grid["at"]) / 60, 1) if _grid["payload"] else None},
+        "official_alerts": sachet_info,
+        "ttl_seconds": openmeteo.TTL,
+    }
