@@ -90,3 +90,14 @@ def test_missing_artifacts_return_503(tmp_path, monkeypatch):
     c = TestClient(api.app)
     assert c.get("/api/health").json()["artifacts_ready"] is False
     assert c.get("/api/meta").status_code == 503
+
+
+@pytest.mark.parametrize("origin, allowed", [
+    ("https://weave-eosin-three.vercel.app", True),
+    ("https://weave-git-main-team.vercel.app", True),
+    ("http://localhost:5173", True),
+    ("https://evil.example.com", False),
+])
+def test_cors_allows_the_deployed_dashboard(origin, allowed):
+    res = TestClient(api.app).options("/api/health", headers={"Origin": origin, "Access-Control-Request-Method": "GET"})
+    assert (res.headers.get("access-control-allow-origin") == origin) is allowed

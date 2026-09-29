@@ -12,6 +12,7 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.7
-      # Comma-separated frontend origin(s), e.g. https://weave.vercel.app
+      # Optional extra frontend origin(s), comma-separated. https://weave-eosin-three.vercel.app,
+      # its Vercel previews and localhost:5173 are always allowed (src/api/main.py).
       - key: ALLOWED_ORIGINS
         sync: false

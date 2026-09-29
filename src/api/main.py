@@ -37,7 +37,15 @@ def _default_artifacts_dir() -> Path:
 
 ARTIFACTS_DIR = Path(os.environ.get("WEAVE_ARTIFACTS_DIR", _default_artifacts_dir()))
 FRONTEND_DIST = config.REPO_ROOT / "frontend" / "dist"
-ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+# The deployed dashboard and local dev are always allowed; ALLOWED_ORIGINS
+# (comma-separated) adds more. Trailing slashes are ignored, since browsers
+# send origins without one.
+DEFAULT_ORIGINS = ["https://weave-eosin-three.vercel.app", "http://localhost:5173", "http://127.0.0.1:5173"]
+ALLOWED_ORIGINS = DEFAULT_ORIGINS + [
+    o.strip().rstrip("/") for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()
+]
+# Vercel preview deployments of this project (weave-<hash>-<team>.vercel.app).
+VERCEL_PREVIEW_ORIGINS = r"https://weave-[a-z0-9-]+\.vercel\.app"
 INDIA_BOUNDS = {"lat": (6.0, 37.5), "lon": (68.0, 97.5)}
 ATTRIBUTION = ("Weather data by Open-Meteo.com (CC BY 4.0): ECMWF IFS, ENS & AIFS, NOAA NCEP GFS, DWD ICON; "
                "ERA5 reanalysis, Copernicus Climate Change Service. Official warnings: NDMA SACHET.")
@@ -54,7 +62,8 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="WEAVE adaptive forecast blending API", version="3.0.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_origin_regex=VERCEL_PREVIEW_ORIGINS,
+                   allow_methods=["GET", "POST"], allow_headers=["*"])
 
 
 def _require(name: str) -> Path:

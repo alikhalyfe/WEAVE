@@ -117,7 +117,7 @@ cd frontend && npm install && npm run dev         # open http://localhost:5173 (
 
 ## Deploy (Render API + Vercel frontend)
 
-1. **Render:** New → Blueprint → this repo (`render.yaml`). Set `ALLOWED_ORIGINS` to the Vercel URL.
+1. **Render:** New → Blueprint → this repo (`render.yaml`). `https://weave-eosin-three.vercel.app` (and its previews) is allowed by default; add other frontend URLs to `ALLOWED_ORIGINS`.
 2. **Vercel:** import with root directory `frontend`, and set `VITE_API_BASE=https://<render-service>.onrender.com`.
 3. **Cold starts:** the free Render tier sleeps. The first visit wakes it (about 30–60 s) and the refresher then warms the 24 cities and the grid.
 
