@@ -73,8 +73,7 @@ function OverviewPage() {
                   <SkeletonCard lines={0} height={440} />
                   <p className="progress-note" role="status">
                     <span className="material-symbols-outlined spin" aria-hidden="true">progress_activity</span>
-                    Building the India grid: fetching 5 models for 124 grid points and learning regional weights
-                    {cities.data ? ` (${cities.data.ready}/${cities.data.total} reference cities ready)` : ""}.
+                    {grid.data?.status === "error" ? `Map data temporarily unavailable (${grid.data.error}); retrying automatically.` : "Fetching the five models for 124 grid points across India…"}
                   </p>
                 </div>
               ) : (
@@ -82,7 +81,10 @@ function OverviewPage() {
                   cities={cities.data?.cities || []} official={official.data?.alerts || []}
                   onCity={(c) => navigate(placeUrl(c.place))} />
               )}
-              {g && <p className="card-caption">{g.note} Weights learned at {g.weight_sources.length} cities. Click a city for its full forecast.</p>}
+              {g && layer === "model" && g.weight_sources.length === 0 && (
+                <p className="progress-note" role="status">Regional weights appear as each city's model skill is learned, a few minutes after startup.</p>
+              )}
+              {g && <p className="card-caption">{g.note} Click a city for its full forecast.</p>}
             </DashboardCard>
 
             <DashboardCard title="Cities today" icon="location_city" subtitle="Plain-language forecast for each tracked city · click for the full week">

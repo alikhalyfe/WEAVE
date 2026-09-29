@@ -17,18 +17,22 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
-from src.live import alerts, cities, engine, grid, openmeteo
+from src.live import alerts, cities, engine, grid, openmeteo, seed
 
 RESULT_TTL = 30 * 60
 REFRESH_SECONDS = 20 * 60
 GRID_TTL = 15 * 60
+GRID_REBUILD_MIN = 90       # seconds between rebuilds as new cities finish
+GRID_RETRY = 60             # retry a failed first build after this long
+CITY_COST = 190             # Open-Meteo units a cold city can cost (worst case)
 _results: dict[tuple, tuple[float, dict]] = {}
 _errors: dict[str, tuple[float, str]] = {}
 _pending: set[str] = set()
-_resolved: dict[str, dict | None] = {}
+_resolved: dict[str, dict | None] = dict(seed.cities())  # committed coordinates: no geocoding on a cold start
 _lock = threading.Lock()
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="weave-live")
-_grid: dict = {"at": 0.0, "payload": None, "error": None, "building": False}
+_grid: dict = {"at": 0.0, "payload": None, "error": None, "building": False, "sources": 0}
+_grid_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="weave-grid")  # never queued behind cities
 _refresher = {"started": None, "runs": 0, "last_run": None, "last_error": None}
 
 
@@ -112,7 +116,10 @@ def overview() -> dict:
         err = _errors.get(label)
         retry_error = err and time.time() - err[0] > 300
         with _lock:
-            if not fresh and label not in _pending and (not err or retry_error):
+            wants = not fresh and label not in _pending and (not err or retry_error)
+            # Warm up only what this hour's data allowance can pay for; the
+            # rest waits for the next refresh cycle instead of hitting a 429.
+            if wants and (hit or openmeteo.can_spend(CITY_COST * (len(_pending) + 1))):
                 _pending.add(label)
                 _pool.submit(_compute_city, label, name, state)
             pending = label in _pending
@@ -147,8 +154,9 @@ def weight_sources() -> list[dict]:
 
 def _build_grid() -> None:
     try:
-        payload = grid.build(weight_sources())
-        _grid.update(at=time.time(), payload=payload, error=None)
+        sources = weight_sources()
+        payload = grid.build(sources)
+        _grid.update(at=time.time(), payload=payload, error=None, sources=len(sources))
     except Exception as exc:  # shown on the map, never hidden
         _grid.update(error=str(exc), at=time.time())
     finally:
@@ -156,24 +164,29 @@ def _build_grid() -> None:
 
 
 def grid_field() -> dict:
-    """Latest India grid. Rebuilt in the background when older than
-    GRID_TTL; returns status 'building' until the first one exists."""
+    """Latest India grid. Built straight away (equal weights until cities
+    are learned), rebuilt as more cities finish and when older than GRID_TTL."""
     with _lock:
-        stale = time.time() - _grid["at"] > GRID_TTL
-        if stale and not _grid["building"] and _results:
+        age = time.time() - _grid["at"]
+        stale = (
+            (_grid["payload"] is None and (age > GRID_RETRY or _grid["at"] == 0))
+            or age > GRID_TTL
+            or (len(_results) > _grid["sources"] and age > GRID_REBUILD_MIN)
+        )
+        if stale and not _grid["building"]:
             _grid["building"] = True
-            _pool.submit(_build_grid)
+            _grid_pool.submit(_build_grid)
     if _grid["payload"] is None:
-        return {"status": "building" if _grid["building"] or not _results else "error", "error": _grid["error"],
-                "note": "The grid appears once at least one city's model skill has been learned."}
+        return {"status": "building" if _grid["building"] else "error", "error": _grid["error"],
+                "note": "Fetching the five models for 124 grid points across India."}
     return {"status": "ready", **_grid["payload"], "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(_grid["at"]))}
 
 
 def _refresh_loop() -> None:
     while True:
         try:
+            grid_field()  # the map first: it needs no learned skill to appear
             overview()
-            grid_field()
             _refresher.update(runs=_refresher["runs"] + 1, last_run=time.time(), last_error=None)
         except Exception as exc:
             _refresher["last_error"] = str(exc)
@@ -255,5 +268,6 @@ def status() -> dict:
                  "cells": len(_grid["payload"]["cells"]) if _grid["payload"] else 0,
                  "built_minutes_ago": round((now - _grid["at"]) / 60, 1) if _grid["payload"] else None},
         "official_alerts": sachet_info,
+        "open_meteo_paused": openmeteo.paused(),
         "ttl_seconds": openmeteo.TTL,
     }

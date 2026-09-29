@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.live import alerts, cache, engine, grid, openmeteo, outlook, service
+from src.live import seed as seed_mod
 
 ERRORS = {"ecmwf_ifs025": (0.0, 0.2), "ncep_gfs013": (2.0, 1.5), "dwd_icon": (0.0, 0.8),
           "ecmwf_ifs025_ensemble_mean": (0.0, 0.5), "ecmwf_aifs025_single": (0.0, 0.4)}
@@ -300,6 +301,39 @@ def test_city_resolution_never_crosses_states():
     from src.live import cities
     assert cities.resolve("Pune", "Maharashtra")["state"] == "Maharashtra"
     assert cities.resolve("Pune", "Goa") is None  # only a Maharashtra match exists: refuse, don't guess
+
+
+def test_grid_builds_without_learned_weights():
+    grid._points = grid.grid_points()[:2]
+    try:
+        g = grid.build([])
+    finally:
+        grid._points = None
+    cell = g["cells"][0]
+    assert cell["values"]["precipitation_mm"][0] is not None  # equal-weight blend is shown
+    assert cell["dominant"]["temperature_2m_c"][0] is None     # but no model is claimed "most trusted"
+    assert g["note"].startswith("Equal model weights")
+
+
+def test_429_pauses_all_requests_until_reset():
+    openmeteo._block_after_429("Hourly API request limit exceeded.")
+    try:
+        assert openmeteo.paused() and not openmeteo.can_spend(1)
+        with pytest.raises(openmeteo.OpenMeteoError, match="paused until"):
+            openmeteo.era5(18.5, 73.9, date(2026, 1, 1), date(2026, 1, 2))
+    finally:
+        openmeteo._blocked.update(until=0.0, reason=None)
+
+
+def test_seeded_climatology_is_used_when_recent(monkeypatch):
+    from datetime import timedelta as td
+    end = engine.climatology_end()
+    rows = [{"doy": d, "temperature_2m_c": 30.0, "precipitation_mm": 20.0, "wind_speed_10m": 5.0, "temperature_normal": 28.0} for d in range(1, 367)]
+    monkeypatch.setattr(seed_mod, "load", lambda: {"climatology": {seed_mod.key(18.52, 73.86): {"through": end.isoformat(), "thresholds": rows}}})
+    assert engine.climatology(18.52, 73.86)["temperature_2m_c"].eq(30.0).all()
+    stale = {"climatology": {seed_mod.key(18.52, 73.86): {"through": (end - td(days=200)).isoformat(), "thresholds": rows}}}
+    monkeypatch.setattr(seed_mod, "load", lambda: stale)
+    assert not engine.climatology(18.52, 73.86)["temperature_2m_c"].eq(30.0).all()  # too old: fetched live
 
 
 def test_keepalive_targets_render_url_and_stays_off_locally(monkeypatch):

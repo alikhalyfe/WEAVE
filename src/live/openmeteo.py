@@ -119,6 +119,39 @@ class _Budget:
 
 
 budget = _Budget()
+
+# After Open-Meteo answers 429, every request pauses until the limit resets
+# (retrying would only burn more allowance). Cached data keeps being served.
+_blocked = {"until": 0.0, "reason": None}
+
+
+def _block_after_429(reason: str) -> None:
+    now = time.time()
+    text = reason.lower()
+    if "minut" in text:
+        until = now + 65
+    elif "hour" in text:
+        until = (now // 3600 + 1) * 3600 + 60
+    elif "day" in text or "daily" in text:
+        until = (now // 86400 + 1) * 86400 + 60
+    else:
+        until = now + 300
+    _blocked.update(until=until, reason=reason)
+
+
+def paused() -> dict | None:
+    """{'until': unix, 'reason': str} while paused after a 429, else None."""
+    return dict(_blocked) if time.time() < _blocked["until"] else None
+
+
+def can_spend(weight: float, window: int = 3600) -> bool:
+    """True if `weight` more units fit this server's budget for `window`."""
+    if paused():
+        return False
+    now = time.time()
+    with budget.lock:
+        used = sum(w for t, w in budget.spent if now - t < window)
+    return used + weight <= BUDGET[window]
 COMMON = {"timezone": "UTC", "wind_speed_unit": "ms", "precipitation_unit": "mm", "temperature_unit": "celsius"}
 
 
@@ -143,6 +176,10 @@ def _get(url: str, params: dict, kind: str, weight_factor: float = 1.0) -> tuple
     if hit:
         return hit[1], hit[0]
     if url != GEOCODE_URL and "meta.json" not in url:
+        p = paused()
+        if p:
+            resume = datetime.fromtimestamp(p["until"], timezone.utc).strftime("%H:%M UTC")
+            raise OpenMeteoError(f"Open-Meteo limit reached ({p['reason']}); paused until {resume}, cached data still served.")
         budget.acquire(request_weight(params) * weight_factor)
     last_error = None
     for _ in range(2):
@@ -152,6 +189,8 @@ def _get(url: str, params: dict, kind: str, weight_factor: float = 1.0) -> tuple
             if res.status_code != 200 or (isinstance(body, dict) and body.get("error")):
                 reason = body.get("reason", res.text[:200]) if isinstance(body, dict) else res.text[:200]
                 last_error = OpenMeteoError(f"Open-Meteo {res.status_code}: {reason}")
+                if res.status_code == 429:
+                    _block_after_429(reason)
                 if res.status_code < 500:
                     break
                 continue

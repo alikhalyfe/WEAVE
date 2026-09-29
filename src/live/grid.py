@@ -108,7 +108,8 @@ def build(sources: list[dict]) -> dict:
                 wsum = sum(w[m] for m in usable)
                 vals.append(round(sum(w[m] * v for m, v in usable.items()) / wsum, 2) if wsum else None)
                 if var != "temperature_min":
-                    doms.append(max(w, key=w.get) if w else None)
+                    learned = weights.get(wvar, {}).get(day)
+                    doms.append(max(learned, key=learned.get) if learned else None)
             cell["values"][var] = vals
             if var != "temperature_min":
                 cell["dominant"][var] = doms
@@ -120,5 +121,6 @@ def build(sources: list[dict]) -> dict:
         "weight_sources": [s["name"] for s in sources],
         "fetched_at": pd.Timestamp(min(fetched), unit="s").isoformat(timespec="seconds") if fetched else None,
         "compute_seconds": round(time.time() - t0, 2),
-        "note": "Blend weights are borrowed from the nearest verified cities (inverse-distance); no local bias correction.",
+        "note": (f"Blend weights are borrowed from the nearest of {len(sources)} verified cities (inverse-distance); no local bias correction."
+                 if sources else "Equal model weights for now: regional weights appear as each city's model skill is learned (a few minutes after startup)."),
     }

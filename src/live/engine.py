@@ -42,7 +42,7 @@ import pandas as pd
 from src.blending.operational import CONFIGS, METHODS, blend_rows, forecast_columns, skill_table
 from src.data_pipeline.config import MONTH_TO_SEASON
 from src.evaluation.extreme_events import event_metrics
-from src.live import openmeteo, outlook
+from src.live import openmeteo, outlook, seed
 from src.live.openmeteo import LIVE_MODELS, MODEL_KEYS, VARIABLES
 from src.regime.classifier import classify, training_thresholds
 
@@ -109,10 +109,19 @@ def daily_thresholds(clim: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
-def climatology(lat: float, lon: float) -> pd.DataFrame:
-    """Day-of-year event thresholds from the last 2 years of daily ERA5."""
+def climatology_end():
     end = _utc_now().date() - timedelta(days=7)  # ERA5 publication lag
-    end = end.replace(day=1) - timedelta(days=1)  # whole months: stable cache key for weeks
+    return end.replace(day=1) - timedelta(days=1)  # whole months: stable cache key for weeks
+
+
+def climatology(lat: float, lon: float, use_seed: bool = True) -> pd.DataFrame:
+    """Day-of-year event thresholds from the last 2 years of daily ERA5
+    (from the committed seed when it is recent enough)."""
+    end = climatology_end()
+    if use_seed:
+        seeded = seed.climatology(lat, lon, end)
+        if seeded is not None:
+            return seeded
     clim, _ = openmeteo.era5_daily(lat, lon, end - timedelta(days=CLIMATE_DAYS - 1), end)
     if clim.empty:
         raise openmeteo.OpenMeteoError("ERA5 climatology unavailable for this place.")
