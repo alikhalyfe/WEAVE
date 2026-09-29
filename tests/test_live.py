@@ -3,7 +3,9 @@
 The mock serves a known synthetic truth and member forecasts with known
 error profiles, so assertions can check the engine learns the right thing:
 ecmwf_ifs is accurate, gfs is biased (+2) and noisy, icon has no lead-day-7
-forecasts, aifs is fairly accurate.
+forecasts, the ensemble mean and aifs are fairly accurate. Like the real API,
+single-model responses carry no model suffix and multi-location requests
+return a list.
 """
 
 from datetime import date, datetime, timedelta, timezone
@@ -14,9 +16,12 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-from src.live import cache, engine, openmeteo, service
+from src.live import alerts, cache, engine, grid, openmeteo, outlook, service
 
-ERRORS = {"ecmwf_ifs025": (0.0, 0.2), "ncep_gfs013": (2.0, 1.5), "dwd_icon": (0.0, 0.8), "ecmwf_aifs025_single": (0.0, 0.4)}
+ERRORS = {"ecmwf_ifs025": (0.0, 0.2), "ncep_gfs013": (2.0, 1.5), "dwd_icon": (0.0, 0.8),
+          "ecmwf_ifs025_ensemble_mean": (0.0, 0.5), "ecmwf_aifs025_single": (0.0, 0.4)}
+DAILY_BASE = {"temperature_2m_max": "temperature_2m", "temperature_2m_min": "temperature_2m",
+              "precipitation_sum": "precipitation", "wind_speed_10m_max": "wind_speed_10m"}
 ERA5_LAG_DAYS = 6
 
 
@@ -49,6 +54,40 @@ def _fmt(times):
     return [str(t)[:16] for t in times]
 
 
+def _daily_body(q, models):
+    today = datetime.now(timezone.utc).date()
+    days = np.arange(np.datetime64(today), np.datetime64(today + timedelta(days=int(q.get("forecast_days", 8)))))
+    noon = days.astype("datetime64[h]") + np.timedelta64(12, "h")
+    daily = {"time": [str(d) for d in days]}
+    for v in q["daily"].split(","):
+        base = _truth(DAILY_BASE[v], noon) * (24 if "precipitation" in v else 1)
+        if models == [openmeteo.ENSEMBLE_MEMBERS_MODEL]:  # 51 members: control + 50 perturbed
+            rng = np.random.default_rng(0)
+            daily[v] = [round(float(x), 2) for x in base]
+            for k in range(1, 51):
+                daily[f"{v}_member{k:02d}"] = [round(float(x), 2) for x in np.clip(base + rng.normal(0, 1, len(base)), 0, None)]
+            continue
+        for m in models:
+            key = v if len(models) == 1 else f"{v}_{m}"
+            daily[key] = [round(float(x), 2) for x in base + ERRORS.get(m, (0, 0))[0]]
+    return {"daily": daily, "elevation": 560.0}
+
+
+def _hourly_body(q, host, models):
+    if host.startswith("previous-runs"):
+        times = _times(q["start_date"], q["end_date"])
+    else:
+        today = datetime.now(timezone.utc).date()
+        times = _times(today.isoformat(), (today + timedelta(days=int(q["forecast_days"]) - 1)).isoformat())
+    hourly = {"time": _fmt(times)}
+    for v in q["hourly"].split(","):
+        base, _, day = v.partition("_previous_day")
+        for m in models:
+            key = v if len(models) == 1 else f"{v}_{m}"
+            hourly[key] = _member(base, m, times, int(day or 0) if host.startswith("previous-runs") else 0)
+    return {"hourly": hourly, "elevation": 560.0}
+
+
 def handler(request: httpx.Request) -> httpx.Response:
     q = dict(request.url.params)
     host = request.url.host
@@ -66,30 +105,32 @@ def handler(request: httpx.Request) -> httpx.Response:
         daily = {"time": [str(d) for d in days]}
         noon = days.astype("datetime64[h]") + np.timedelta64(12, "h")
         for v in q["daily"].split(","):
-            base = {"temperature_2m_max": "temperature_2m", "precipitation_sum": "precipitation", "wind_speed_10m_max": "wind_speed_10m"}[v]
-            daily[v] = [round(float(x), 2) for x in _truth(base, noon) * (24 if base == "precipitation" else 1)]
+            daily[v] = [round(float(x), 2) for x in _truth(DAILY_BASE[v], noon) * (24 if "precipitation" in v else 1)]
         return httpx.Response(200, json={"daily": daily})
-    hourly_vars = q["hourly"].split(",")
     if host.startswith("archive"):
         times = _times(q["start_date"], q["end_date"])
         cutoff = np.datetime64(datetime.now(timezone.utc).date() - timedelta(days=ERA5_LAG_DAYS))
         hourly = {"time": _fmt(times)}
-        for v in hourly_vars:
+        for v in q["hourly"].split(","):
             vals = [round(float(x), 2) for x in _truth(v, times)]
             hourly[v] = [None if t >= cutoff else x for t, x in zip(times, vals)]
         return httpx.Response(200, json={"hourly": hourly})
     models = q["models"].split(",")
-    if host.startswith("previous-runs"):
-        times = _times(q["start_date"], q["end_date"])
-    else:
-        today = datetime.now(timezone.utc).date()
-        times = _times(today.isoformat(), (today + timedelta(days=int(q["forecast_days"]) - 1)).isoformat())
-    hourly = {"time": _fmt(times)}
-    for v in hourly_vars:
-        base, _, day = v.partition("_previous_day")
-        for m in models:
-            hourly[f"{v}_{m}"] = _member(base, m, times, int(day or 0) if host.startswith("previous-runs") else 0)
-    return httpx.Response(200, json={"hourly": hourly})
+    n_loc = len(q["latitude"].split(","))
+    bodies = [_daily_body(q, models) if "daily" in q else _hourly_body(q, host, models) for _ in range(n_loc)]
+    return httpx.Response(200, json=bodies if n_loc > 1 else bodies[0])
+
+
+SACHET_SAMPLE = [
+    {"identifier": 1, "severity": "Orange", "severity_color": "orange", "disaster_type": "Heavy Rain",
+     "area_description": "Pune, Satara, Maharashtra", "warning_message": "Heavy rainfall likely at isolated places.",
+     "alert_source": "IMD", "effective_start_time": "Tue Sep 29 08:00:00 IST 2026",
+     "effective_end_time": "Sat Oct 31 08:00:00 IST 2099", "centroid": "73.9,18.4"},
+    {"identifier": 2, "severity": "Yellow", "severity_color": "yellow", "disaster_type": "Flood",
+     "area_description": "Kosi, Khagaria, Bihar", "warning_message": "River above danger level.",
+     "alert_source": "CWC", "effective_start_time": "Mon Sep 28 08:00:00 IST 2026",
+     "effective_end_time": "Mon Sep 28 09:00:00 IST 2026", "centroid": "86.7,25.5"},
+]
 
 
 @pytest.fixture(autouse=True)
@@ -100,6 +141,8 @@ def mock_openmeteo(tmp_path, monkeypatch):
     engine._skill_cache.clear()
     service._results.clear()
     openmeteo.set_client(httpx.Client(transport=httpx.MockTransport(handler)))
+    alerts.set_client(httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=SACHET_SAMPLE))))
+    openmeteo.budget.spent.clear()
     yield
     openmeteo.set_client(httpx.Client())
 
@@ -192,3 +235,62 @@ def test_budget_refuses_instead_of_exceeding_hourly_limit(monkeypatch):
     b.acquire(8)
     with pytest.raises(openmeteo.OpenMeteoError, match="hourly"):
         b.acquire(5)
+
+
+def test_ensemble_daily_has_51_members():
+    ens, _ = openmeteo.ensemble_daily(18.5, 73.9)
+    assert ens.groupby("variable")["member"].nunique().eq(51).all()
+
+
+def test_forecast_includes_ensemble_mean_member_and_cloud():
+    (res,), _ = openmeteo.forecast([(18.5, 73.9)])
+    assert res["members"]["ens_forecast"].notna().all()
+    assert res["cloud"]["cloud_cover"].notna().all() and res["elevation"] == 560.0
+
+
+def test_imd_heat_wave_rules():
+    assert outlook.heat_wave(41.0, 36.0, hills=False) == "heat wave"          # departure 5.0
+    assert outlook.heat_wave(41.0, 34.0, hills=False) == "severe heat wave"   # departure 7.0
+    assert outlook.heat_wave(39.0, 30.0, hills=False) is None                 # below 40 °C in the plains
+    assert outlook.heat_wave(31.0, 26.0, hills=True) == "heat wave"           # hills threshold 30 °C
+    assert outlook.heat_wave(45.5, 44.0, hills=False) == "heat wave"          # absolute 45 °C
+
+
+def test_imd_rain_categories_and_words():
+    assert outlook.rain_category(0.05) is None
+    assert outlook.rain_category(70) == "heavy rain"
+    assert outlook.rain_category(210) == "extremely heavy rain"
+    d = outlook.describe_day({"high": 29, "low": 24, "rain_mm": 80, "rain_chance": 0.9, "wind_kmh": 20, "cloud": 90, "hazards": []})
+    assert d["headline"] == "Heavy rain" and "around 80 mm" in d["text"] and "Chance of rain 90%" in d["text"]
+
+
+def test_outlook_is_built_from_computed_numbers():
+    r = engine.live_forecast("Pune", 18.52, 73.86)
+    assert r["ensemble_members"] == 51
+    assert r["outlook"] and all(o["headline"] and o["text"] for o in r["outlook"])
+    first = r["outlook"][0]
+    assert first["high"] == r["variables"]["temperature_2m_c"]["days"][0]["blended"]
+    assert all(o["rain_chance"] is None or 0 <= o["rain_chance"] <= 1 for o in r["outlook"])
+
+
+def test_official_alerts_parse_filter_and_match_by_distance_or_state():
+    feed = alerts.fetch()
+    assert [a["id"] for a in feed["alerts"]] == ["1"]  # the expired flood alert is dropped
+    assert alerts.near(18.52, 73.86)[0]["distance_km"] < 50
+    assert alerts.near(21.1, 79.1, state="Maharashtra")[0]["matched_by"] == "state"
+    assert alerts.near(28.6, 77.2) == []
+
+
+def test_grid_points_are_inside_india_and_blend_with_borrowed_weights():
+    pts = grid.grid_points()
+    assert 80 < len(pts) < 200 and all(6 <= la <= 37 and 68 <= lo <= 98 for la, lo in pts)
+    grid._points = pts[:3]
+    try:
+        src = [{"name": "Pune", "latitude": 18.52, "longitude": 73.86,
+                "weights": {v: {str(d): {"ecmwf_ifs": 1.0} for d in range(8)} for v in ("temperature_2m_c", "precipitation_mm", "wind_speed_10m")}}]
+        g = grid.build(src)
+    finally:
+        grid._points = None
+    cell = g["cells"][0]
+    assert cell["neighbours"] == ["Pune"] and cell["dominant"]["temperature_2m_c"][0] == "ecmwf_ifs"
+    assert cell["values"]["temperature_2m_c"][0] is not None

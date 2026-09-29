@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -25,7 +26,7 @@ from pydantic import BaseModel, Field
 
 from src.blending.operational import CONFIGS, METHODS, MODELS, blend_rows, skill_table
 from src.data_pipeline import config
-from src.live import openmeteo, service
+from src.live import alerts, grid, openmeteo, service
 
 
 def _default_artifacts_dir() -> Path:
@@ -38,13 +39,21 @@ ARTIFACTS_DIR = Path(os.environ.get("WEAVE_ARTIFACTS_DIR", _default_artifacts_di
 FRONTEND_DIST = config.REPO_ROOT / "frontend" / "dist"
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 INDIA_BOUNDS = {"lat": (6.0, 37.5), "lon": (68.0, 97.5)}
-ATTRIBUTION = ("Weather data by Open-Meteo.com (CC BY 4.0): ECMWF IFS & AIFS, NOAA NCEP GFS, DWD ICON; "
-               "ERA5 reanalysis, Copernicus Climate Change Service.")
+ATTRIBUTION = ("Weather data by Open-Meteo.com (CC BY 4.0): ECMWF IFS, ENS & AIFS, NOAA NCEP GFS, DWD ICON; "
+               "ERA5 reanalysis, Copernicus Climate Change Service. Official warnings: NDMA SACHET.")
 
 Variable = Literal["temperature_2m_c", "precipitation_mm", "wind_speed_10m"]
 MEMBER_COLS = [f"{m}_forecast" for m in MODELS]
 
-app = FastAPI(title="WEAVE adaptive forecast blending API", version="2.0.0")
+@asynccontextmanager
+async def lifespan(_app):
+    # The operational workflow: keep tracked cities and the India grid fresh.
+    if os.environ.get("WEAVE_BACKGROUND", "1") != "0":
+        service.start_refresher()
+    yield
+
+
+app = FastAPI(title="WEAVE adaptive forecast blending API", version="3.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"])
 
 
@@ -252,13 +261,19 @@ def live_search(q: str = Query(min_length=2, max_length=80)):
 
 
 @app.get("/api/live/forecast")
-def live_forecast(lat: float, lon: float, name: str = Query("Selected place", max_length=120)):
-    """Adaptive blend of ECMWF IFS, NCEP GFS, DWD ICON and ECMWF AIFS for
-    the next ~7 days, with weights learned from this place's verified history."""
+def live_forecast(lat: float, lon: float, name: str = Query("Selected place", max_length=120),
+                  state: str | None = Query(None, max_length=80)):
+    """Adaptive blend of ECMWF IFS, NCEP GFS, DWD ICON, the ECMWF ensemble
+    mean and ECMWF AIFS for the next ~7 days, with weights learned from this
+    place's verified history; plus official warnings near the place."""
     if not (INDIA_BOUNDS["lat"][0] <= lat <= INDIA_BOUNDS["lat"][1] and INDIA_BOUNDS["lon"][0] <= lon <= INDIA_BOUNDS["lon"][1]):
         raise HTTPException(422, "Live mode covers India only.")
     payload = _live_call(service.forecast, name, lat, lon)
-    return _clean({**payload, "attribution": ATTRIBUTION})
+    try:
+        official = {"alerts": alerts.near(lat, lon, state), "error": None}
+    except Exception as exc:  # official feed down: say so, forecast still served
+        official = {"alerts": [], "error": f"Official alert feed unavailable: {exc}"}
+    return _clean({**payload, "official_alerts": official, "attribution": ATTRIBUTION})
 
 
 @app.get("/api/live/cities")
@@ -271,6 +286,37 @@ def live_cities():
 @app.get("/api/live/models")
 def live_models():
     return {"models": openmeteo.LIVE_MODELS, "runs": _live_call(openmeteo.model_runs), "attribution": ATTRIBUTION}
+
+
+@app.get("/api/live/grid")
+def live_grid():
+    """Blended daily field over India (1.5° grid) with regional weights."""
+    return _clean({**service.grid_field(), "attribution": ATTRIBUTION})
+
+
+@app.get("/api/live/boundary")
+def live_boundary():
+    """India boundary (Survey of India claim; datameet, CC-0), simplified."""
+    return grid.boundary()
+
+
+@app.get("/api/live/official-alerts")
+def official_alerts(lat: float | None = None, lon: float | None = None, state: str | None = None,
+                    radius_km: float = Query(150, ge=10, le=1000)):
+    """Active official warnings from NDMA SACHET (IMD, CWC, SDMAs). With
+    lat/lon, only those near the place."""
+    try:
+        feed = alerts.fetch()
+        items = alerts.near(lat, lon, state, radius_km) if lat is not None and lon is not None else feed["alerts"]
+    except Exception as exc:
+        raise HTTPException(502, f"Official alert feed unavailable: {exc}")
+    return {"alerts": items, "fetched_at": feed["fetched_at"], "source": feed["source"]}
+
+
+@app.get("/api/live/status")
+def live_status():
+    """Operational status: refresh loop, API budget, caches, feeds."""
+    return _clean(service.status())
 
 
 # ---- Frontend (single-page app) ----
