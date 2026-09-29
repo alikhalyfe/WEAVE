@@ -23,6 +23,7 @@ const everyThirdDay = (iso) => {
   const label = istHour(iso) === 0 ? fmtIST(iso).split(",")[0] : null;
   return label && Number(label.split(" ")[0]) % 3 === 0 ? label : null;
 };
+const UNUSUAL_WORD = { temperature_2m_c: "UNUSUALLY HOT", precipitation_mm: "UNUSUALLY WET", wind_speed_10m: "UNUSUALLY WINDY" };
 const scaled = (x, k) => (x === null || x === undefined ? null : x * k);
 
 function PlacePicker() {
@@ -33,7 +34,7 @@ function PlacePicker() {
       <div className="picker">
         <img src="/logo-192.png" alt="" className="picker__logo" width="72" height="72" />
         <h2>Which place in India?</h2>
-        <p className="muted">Search any city, town or village. The first forecast for a new place takes 10–20 seconds while WEAVE checks how each of the 5 models has performed there.</p>
+        <p className="muted">Search any city, town or village. A new place can take up to a minute the first time while WEAVE checks how each of the 5 models has performed there; after that it’s instant.</p>
         <SearchBox autoFocus />
         {ready.length > 0 && (
           <Stagger className="chip-row">
@@ -91,6 +92,10 @@ function ForecastPage() {
   const threshold = variable !== "precipitation_mm" ? scaled(firstFull?.threshold, k) : null;
   const regimes = vd ? vd.points.filter((p) => p.hours_ahead < 72).reduce((acc, p) => ({ ...acc, [p.regime]: (acc[p.regime] || 0) + 1 }), {}) : {};
   const days = vd?.days.map((x) => ({ ...x, blended: scaled(x.blended, k), threshold: scaled(x.threshold, k) }));
+  // Unusual days for every variable, not just the one selected in the tabs.
+  const unusual = d ? Object.entries(LIVE_VARIABLES).flatMap(([key, meta]) => d.variables[key].days.filter((x) => x.event).map((x) => ({
+    ...x, key, meta, blended: scaled(x.blended, meta.scale), threshold: scaled(x.threshold, meta.scale),
+  }))).sort((a, b) => a.date.localeCompare(b.date)) : [];
   const skill = vd?.skill.map((s) => ({ ...s, mae: scaled(s.mae, k) }));
   const nearOfficial = d?.official_alerts;
   const runs = d ? Object.values(d.model_runs).filter((r) => r.initialised).length : 0;
@@ -105,7 +110,7 @@ function ForecastPage() {
           <>
             <div className="progress-note" role="status">
               <span className="material-symbols-outlined spin" aria-hidden="true">progress_activity</span>
-              <span>Learning how each model performs in {place.name}: 120 days of archived ECMWF, GFS, ICON, ensemble and AIFS forecasts checked against ERA5. The first load takes 10–20 s, then it’s cached.</span>
+              <span>Learning how each model performs in {place.name}: 120 days of archived ECMWF, GFS, ICON, ensemble and AIFS forecasts checked against ERA5. A place nobody has looked up yet can take up to a minute (the free data service limits requests per minute); after that it’s cached.</span>
             </div>
             <SkeletonCard lines={6} height={0} />
             <div className="forecast-grid">{[0, 1, 2, 3].map((i) => <SkeletonCard key={i} lines={2} height={30} />)}</div>
@@ -188,17 +193,17 @@ function ForecastPage() {
 
               <aside className="dashboard-grid__side">
                 <DashboardCard title="Unusual days" icon="insights" className="alert-card"
-                  subtitle={`${v.label}: blended daily ${variable === "precipitation_mm" ? "total" : "max"} above the 95th percentile for the date (ERA5, last 2 years, ±15 days)`}>
-                  {days.filter((x) => x.event).length === 0 ? (
+                  subtitle="Temperature, rain or wind above the 95th percentile for the date (daily max / total; ERA5, last 2 years, ±15 days)">
+                  {unusual.length === 0 ? (
                     <div className="alert-empty"><span className="material-symbols-outlined" aria-hidden="true">check_circle</span>Nothing unusual for the time of year.</div>
                   ) : (
                     <ul className="alert-list">
-                      {days.filter((x) => x.event).map((x) => (
-                        <li key={x.date} className="alert-item alert-item--low">
+                      {unusual.map((x) => (
+                        <li key={x.key + x.date} className="alert-item alert-item--low">
                           <div className="alert-item__static">
-                            <span className="alert-item__head"><span className="alert-card__severity">UNUSUAL</span><span className="alert-card__probability">{pct(x.probability)} of weighted models agree</span></span>
+                            <span className="alert-item__head"><span className="alert-card__severity">{UNUSUAL_WORD[x.key]}</span><span className="alert-card__probability">{pct(x.probability)} of weighted models agree</span></span>
                             <strong>{new Date(x.date + "T00:00:00Z").toUTCString().slice(0, 11)}</strong>
-                            <span className="alert-item__detail">Blend {fmt(x.blended, v.digits)} vs p95 {fmt(x.threshold, v.digits)} {v.unit}{!x.complete && ` · from ${x.first_hour_ist} IST`}</span>
+                            <span className="alert-item__detail">Blend {fmt(x.blended, x.meta.digits)} vs p95 {fmt(x.threshold, x.meta.digits)} {x.meta.unit}{!x.complete && ` · from ${x.first_hour_ist} IST`}</span>
                           </div>
                         </li>
                       ))}

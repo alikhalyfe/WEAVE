@@ -5,6 +5,12 @@ import { fmt, toDate } from "../format";
 const W = 800;
 const PAD = { top: 14, right: 12, bottom: 26, left: 46 };
 
+/** Decimals needed so neighbouring ticks never print the same label. */
+function tickDecimals(ticks) {
+  const step = ticks.length > 1 ? Math.abs(ticks[1] - ticks[0]) : 1;
+  return Math.min(3, (String(+step.toFixed(6)).split(".")[1] || "").length);
+}
+
 function niceTicks(min, max, count = 5) {
   const span = max - min || 1;
   const step = 10 ** Math.floor(Math.log10(span / count));
@@ -55,7 +61,8 @@ function TimeSeriesChart({ points, series, time, fmtX, fmtTip, digits = 1, zero 
       const label = fmtX(time(p));
       if (label) days.push({ x: sx(xs[i]), label });
     });
-    return { xs, sx, sy, paths, yTicks: niceTicks(lo, hi), days };
+    const yTicks = niceTicks(lo, hi);
+    return { xs, sx, sy, paths, yTicks, yDecimals: tickDecimals(yTicks), days };
   }, [points, series, time, fmtX, zero, threshold, H]);
 
   if (!geo) return <div className="chart-empty">No data for this selection.</div>;
@@ -80,7 +87,7 @@ function TimeSeriesChart({ points, series, time, fmtX, fmtTip, digits = 1, zero 
           {geo.yTicks.map((t) => (
             <g key={t}>
               <line x1={PAD.left} x2={W - PAD.right} y1={geo.sy(t)} y2={geo.sy(t)} className="chart-grid" />
-              <text x={PAD.left - 8} y={geo.sy(t) + 3} className="chart-tick" textAnchor="end">{fmt(t, digits > 1 ? 1 : 0)}</text>
+              <text x={PAD.left - 8} y={geo.sy(t) + 3} className="chart-tick" textAnchor="end">{fmt(t, geo.yDecimals)}</text>
             </g>
           ))}
           {geo.days.map((t) => <text key={t.x} x={t.x} y={H - 8} className="chart-tick" textAnchor="middle">{t.label}</text>)}

@@ -105,10 +105,12 @@ python -m venv venv && venv/Scripts/activate      # Windows (source venv/bin/act
 pip install -r requirements.txt
 uvicorn src.api.main:app                          # API + background refresh on :8000
 
-cd frontend && npm install && npm run dev         # dashboard on :5173 (proxies /api)
+cd frontend && npm install && npm run dev         # open http://localhost:5173 (proxies /api)
 # or npm run build: the API then serves the dashboard itself at :8000
 ```
 
+- Use `http://localhost:5173`, not `127.0.0.1:5173`: Vite listens on the IPv6 localhost by default. Run `npm run dev -- --host 127.0.0.1` if you need the IPv4 address.
+- A place nobody has looked up yet can take up to a minute the first time, because Open-Meteo limits requests per minute. After that it's cached.
 - No keys and no training are needed for live mode. The committed `data/artifacts/` serve the replay.
 - Rebuild the replay with `python -m src.models.tuning && python -m src.workflow --retrain` (about 15 min).
 - Tests: `pytest` runs 94 tests, including live mode against a mocked Open-Meteo, SACHET parsing, IMD rules, leakage guards and the API.

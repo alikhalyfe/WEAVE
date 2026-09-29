@@ -7,8 +7,9 @@ function WorkflowCard({ meta }) {
   if (!meta) return null;
   const generated = meta.generated_at?.replace("T", " ").replace("+00:00", " UTC");
   return (
-    <DashboardCard id="workflow" title="Operational Workflow" icon="settings_suggest" className="workflow-card"
-      subtitle={`Last run ${generated} · ${meta.runtime_seconds}s`}>
+    <DashboardCard id="workflow" title="2025 replay pipeline" icon="settings_suggest" className="workflow-card"
+      subtitle={`Research archive, not the live blend · last rebuilt ${generated} · ${meta.runtime_seconds}s`}
+      action={<span className="card-tag card-tag--historical">REPLAY · 2025</span>}>
       <ol className="workflow-stages">
         {STAGES.map((s) => <li key={s}>{s}</li>)}
       </ol>
