@@ -3,6 +3,7 @@ existing pipeline functions (no data loading/feature/target logic is
 duplicated here) and applies a leakage-safe train/test split per lead time.
 """
 
+import numpy as np
 import pandas as pd
 
 from src.data_pipeline import config
@@ -23,12 +24,41 @@ FEATURE_COLUMNS = [
     for n in config.LAG_HOURS
 ]
 
+# Extra predictors (all backward-looking, computed per location):
+# * lag 18 h -- for a 6 h lead this is "same hour yesterday" relative to the
+#   target time, the strongest diurnal analogue a forecaster has;
+# * 24 h rolling mean / max / sum -- the day so far;
+# * cyclic hour and day-of-year encodings, so 23:00 sits next to 00:00;
+# * a location code, letting trees learn site-specific behaviour.
+EXTRA_FEATURE_COLUMNS = [
+    *(f"{col}_lag_18h" for col in config.LAG_FEATURE_COLUMNS),
+    "temperature_24h_mean", "temperature_24h_max", "precipitation_24h_sum", "wind_speed_24h_mean",
+    "hour_sin", "hour_cos", "doy_sin", "doy_cos", "location_code",
+]
+FEATURE_COLUMNS = FEATURE_COLUMNS + EXTRA_FEATURE_COLUMNS
+
+
+def add_extra_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.sort_values(["location", "timestamp"]).copy()
+    g = df.groupby("location", sort=False)
+    for col in config.LAG_FEATURE_COLUMNS:
+        df[f"{col}_lag_18h"] = g[col].shift(18)
+    roll = lambda col, fn: g[col].transform(lambda x: getattr(x.rolling(24, min_periods=1), fn)())  # noqa: E731
+    df["temperature_24h_mean"] = roll("temperature_2m_c", "mean")
+    df["temperature_24h_max"] = roll("temperature_2m_c", "max")
+    df["precipitation_24h_sum"] = roll("precipitation_mm", "sum")
+    df["wind_speed_24h_mean"] = roll("wind_speed_10m", "mean")
+    df["hour_sin"], df["hour_cos"] = np.sin(2 * np.pi * df["hour"] / 24), np.cos(2 * np.pi * df["hour"] / 24)
+    df["doy_sin"], df["doy_cos"] = np.sin(2 * np.pi * df["day_of_year"] / 366), np.cos(2 * np.pi * df["day_of_year"] / 366)
+    df["location_code"] = df["location"].astype("category").cat.codes
+    return df
+
 
 def build_modeling_dataset() -> pd.DataFrame:
     """Master ERA5 data -> engineered features + lead-time target columns,
     one row per timestamp x location (wide format)."""
     master_df = build_master_dataset()
-    features_df = engineer_all_features(master_df)
+    features_df = add_extra_features(engineer_all_features(master_df))
     targets_df = add_lead_time_targets(master_df)
 
     target_columns = [

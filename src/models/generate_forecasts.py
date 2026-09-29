@@ -22,6 +22,7 @@ from src.evaluation.metrics import mae
 from src.models.persistence import PersistenceModel
 from src.models.tree_models import AIModel, RandomForestModel
 from src.models.training import FEATURE_COLUMNS, build_modeling_dataset, get_leakage_safe_train_test
+from src.models.tuning import load_tuned
 
 FORECAST_RUNS = [
     ("hindcast", config.HINDCAST_TRAIN_END, config.HINDCAST_START, config.HINDCAST_END),
@@ -37,8 +38,10 @@ def forecast_window(
     run_name: str = "",
 ) -> pd.DataFrame:
     """Fit all models on data whose targets land at/before train_end and
-    predict issue times in [test_start, test_end]. Long format, one row per
+    predict issue times in [test_start, test_end] (AI model hyperparameters
+    from tuning.py, chosen on 2023 only). Long format, one row per
     (timestamp, location, lead_time_hours, target_variable)."""
+    tuned = load_tuned()
     blocks = []
     for var in config.TARGET_VARIABLES:
         for lead_h in config.LEAD_TIMES_HOURS:
@@ -49,7 +52,7 @@ def forecast_window(
             models = {
                 "model_a": PersistenceModel(target_variable=var),
                 "model_b": RandomForestModel(var, lead_h, FEATURE_COLUMNS),
-                "ai_model": AIModel(var, lead_h, FEATURE_COLUMNS),
+                "ai_model": AIModel(var, lead_h, FEATURE_COLUMNS, **tuned.get(f"{var}|{lead_h}", {})),
             }
 
             block = test_df[["timestamp", "location"]].copy()

@@ -1,0 +1,42 @@
+{
+ "temperature_2m_c|6": {
+  "max_iter": 500,
+  "learning_rate": 0.05,
+  "max_leaf_nodes": 63,
+  "l2_regularization": 1.0
+ },
+ "temperature_2m_c|12": {
+  "max_iter": 500,
+  "learning_rate": 0.05,
+  "loss": "absolute_error"
+ },
+ "temperature_2m_c|24": {
+  "max_iter": 500,
+  "learning_rate": 0.05,
+  "loss": "absolute_error"
+ },
+ "precipitation_mm|6": {
+  "max_iter": 150
+ },
+ "precipitation_mm|12": {
+  "max_iter": 150
+ },
+ "precipitation_mm|24": {
+  "max_iter": 150
+ },
+ "wind_speed_10m|6": {
+  "max_iter": 500,
+  "learning_rate": 0.05,
+  "loss": "absolute_error"
+ },
+ "wind_speed_10m|12": {
+  "max_iter": 500,
+  "learning_rate": 0.05,
+  "loss": "absolute_error"
+ },
+ "wind_speed_10m|24": {
+  "max_iter": 500,
+  "learning_rate": 0.05,
+  "loss": "absolute_error"
+ }
+}
