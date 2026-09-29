@@ -159,7 +159,10 @@ class OpenMeteoError(RuntimeError):
     """Upstream failure (network, HTTP error or API error payload)."""
 
 
-_client = httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0), headers={"User-Agent": "WEAVE/2 (non-commercial)"})
+# Generous connect timeout: TLS handshakes to Open-Meteo occasionally stall
+# (seen from GitHub runners as "_ssl.c: The handshake operation timed out").
+_client = httpx.Client(timeout=httpx.Timeout(60.0, connect=30.0), headers={"User-Agent": "WEAVE/2 (non-commercial)"})
+RETRY_WAITS = (0, 3, 10, 30)  # seconds before each attempt: transient network/5xx errors only
 
 
 def set_client(client: httpx.Client) -> None:
@@ -169,7 +172,8 @@ def set_client(client: httpx.Client) -> None:
 
 
 def _get(url: str, params: dict, kind: str, weight_factor: float = 1.0) -> tuple[object, float]:
-    """GET with TTL cache and one retry. Returns (json, fetched_at_unix).
+    """GET with TTL cache; network errors and 5xx are retried with backoff
+    (RETRY_WAITS), other errors are not. Returns (json, fetched_at_unix).
     weight_factor scales the budget charge (ensemble members count as variables)."""
     key = str(httpx.URL(url, params=params))
     hit = cache.get(key, TTL[kind])
@@ -182,7 +186,9 @@ def _get(url: str, params: dict, kind: str, weight_factor: float = 1.0) -> tuple
             raise OpenMeteoError(f"Open-Meteo limit reached ({p['reason']}); paused until {resume}, cached data still served.")
         budget.acquire(request_weight(params) * weight_factor)
     last_error = None
-    for _ in range(2):
+    for wait in RETRY_WAITS:
+        if wait:
+            time.sleep(wait)
         try:
             res = _client.get(url, params=params)
             body = res.json()

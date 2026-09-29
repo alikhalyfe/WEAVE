@@ -363,6 +363,39 @@ def test_snapshot_is_served_without_recomputing_and_survives_upstream_failures(m
     assert service.forecast("Pune", 18.52, 73.86) is payload
 
 
+def test_transient_network_errors_are_retried(monkeypatch):
+    calls = {"n": 0}
+
+    def flaky(request):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise httpx.ConnectTimeout("_ssl.c:993: The handshake operation timed out")
+        return handler(request)
+    monkeypatch.setattr(openmeteo, "RETRY_WAITS", (0, 0, 0, 0))
+    openmeteo.set_client(httpx.Client(transport=httpx.MockTransport(flaky)))
+    df, _ = openmeteo.era5(18.5, 73.9, date(2026, 1, 1), date(2026, 1, 2))
+    assert calls["n"] == 3 and len(df) == 48
+
+
+def test_publish_carries_forward_cities_that_keep_failing(monkeypatch):
+    from src.live import publish
+    ok = publish._compute("Pune, Maharashtra", "Pune", "Maharashtra")
+    monkeypatch.setattr(publish.cities, "TRACKED_CITIES", [("Pune", "Maharashtra"), ("Delhi", "Delhi")])
+    monkeypatch.setattr(publish, "SECOND_PASS_WAIT", 0)
+
+    def compute(label, name, state):
+        if name == "Delhi":
+            raise openmeteo.OpenMeteoError("Open-Meteo request failed: handshake timed out")
+        return ok
+    monkeypatch.setattr(publish, "_compute", compute)
+    old = {**ok, "label": "Delhi, Delhi", "computed_at": 1.0}
+    monkeypatch.setattr(publish, "previous_snapshot", lambda: {"cities": [old]})
+    snap = publish.build_snapshot()
+    assert [c["label"] for c in snap["cities"]] == ["Pune, Maharashtra", "Delhi, Delhi"]
+    assert snap["carried_over"] == ["Delhi, Delhi"] and snap["failures"] == []
+    assert snap["cities"][1]["computed_at"] == 1.0  # real age kept, not relabelled as fresh
+
+
 def test_keepalive_targets_render_url_and_stays_off_locally(monkeypatch):
     monkeypatch.delenv("RENDER_EXTERNAL_URL", raising=False)
     monkeypatch.delenv("KEEPALIVE_URL", raising=False)
