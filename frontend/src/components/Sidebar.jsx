@@ -9,7 +9,8 @@ const GROUPS = [
       { to: "/forecast", label: "Forecast", icon: "trending_up" },
       { to: "/weights", label: "Model Weights", icon: "tune" },
       { to: "/performance", label: "Performance", icon: "analytics" },
-      { to: "/extremes", label: "Extreme Events", icon: "warning" },
+      { to: "/extremes", label: "Warnings", icon: "warning" },
+      { to: "/operations", label: "Operations", icon: "autorenew" },
     ],
   },
   {
@@ -27,7 +28,7 @@ function Sidebar() {
     <aside className="sidebar">
       <div>
         <NavLink className="brand" to="/" aria-label="WEAVE overview">
-          <span className="brand__mark">W</span>
+          <img className="brand__logo" src="/logo-64.png" alt="" width="36" height="36" />
           <span className="brand__copy">
             <strong>WEAVE</strong>
             <span>Adaptive Weather<br />Forecast Blending</span>
@@ -57,8 +58,7 @@ function Sidebar() {
 
       <div className="sidebar__footer">
         <span className="online-dot" />
-        <span>Open-Meteo · ERA5</span>
-        <span className="sidebar__footer-tag">CC BY 4.0</span>
+        <span>Open-Meteo · ERA5 · SACHET</span>
       </div>
     </aside>
   );

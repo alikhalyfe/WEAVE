@@ -13,9 +13,11 @@ const ExtremesPage = lazy(() => import("./pages/ExtremesPage"));
 const BlendPage = lazy(() => import("./pages/BlendPage"));
 const HistoricalPage = lazy(() => import("./pages/HistoricalPage"));
 const AboutPage = lazy(() => import("./pages/AboutPage"));
+const OperationsPage = lazy(() => import("./pages/OperationsPage"));
 import "./App.css";
 import "./dashboard.css";
 import "./pages.css";
+import "./polish.css";
 
 function NotFound() {
   return <main className="dashboard-content"><div className="chart-empty">Page not found.</div></main>;
@@ -40,6 +42,7 @@ function App() {
                 <Route path="/blend" element={<BlendPage />} />
                 <Route path="/historical" element={<HistoricalPage />} />
                 <Route path="/about" element={<AboutPage />} />
+                <Route path="/operations" element={<OperationsPage />} />
                 <Route path="*" element={<NotFound />} />
               </Routes>
               </Suspense>
@@ -47,7 +50,7 @@ function App() {
           </AnimatePresence>
           <footer className="dashboard-footer site-footer">
             <span><i /> WEAVE · adaptive AI–NWP forecast blending</span>
-            <span>Weather data by Open-Meteo.com (CC BY 4.0): ECMWF, NOAA NCEP, DWD · ERA5 © Copernicus C3S · map © OpenStreetMap contributors</span>
+            <span>Weather data by Open-Meteo.com (CC BY 4.0): ECMWF, NOAA NCEP, DWD · ERA5 © Copernicus C3S · official warnings: NDMA SACHET · boundary: Survey of India via datameet (CC-0) · map © OpenStreetMap contributors</span>
           </footer>
         </div>
       </div>

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { useApi } from "../api";
 import DashboardCard from "../components/DashboardCard";
-import IndiaMap from "../components/IndiaMap";
+import IndiaGridMap from "../components/IndiaGridMap";
 import { Page, SkeletonCard } from "../components/Motion";
 import PageHeader, { SourceBadge } from "../components/PageHeader";
 import VariableTabs from "../components/VariableTabs";
@@ -17,17 +18,9 @@ function WeightsPage() {
   const navigate = useNavigate();
   const d = cities.data;
   const ready = (d?.cities || []).filter((c) => c.status === "ready");
-
-  const points = ready.map((c) => {
-    const dom = c.summary.dominant[variable]?.[String(day)];
-    const m = dom && LIVE_MODEL_BY_KEY[dom.model];
-    return {
-      id: c.label, latitude: c.place.latitude, longitude: c.place.longitude, color: m ? m.color : "#cbd5e1",
-      radius: dom ? 6 + dom.weight * 10 : 6, label: `${c.name}: ${m ? m.label + " " + pct(dom.weight) : "no data"}`,
-      detail: dom ? LIVE_MODELS.map((x) => `${x.short} ${pct(dom.weights[x.key] ?? 0)}`).join(" · ") : null,
-      onClick: () => navigate(placeUrl(c.place)),
-    };
-  });
+  const grid = useApi("/live/grid", { pollMs: 8000, poll: (g) => g.status !== "ready" });
+  const boundary = useApi("/live/boundary");
+  const g = grid.data?.status === "ready" ? grid.data : null;
 
   const counts = LIVE_MODELS.map((m) => ({
     ...m, n: ready.filter((c) => c.summary.dominant[variable]?.[String(day)]?.model === m.key).length,
@@ -56,10 +49,11 @@ function WeightsPage() {
 
         <div className="dashboard-grid">
           <div className="dashboard-grid__main">
-            <DashboardCard title="Weight map" icon="map" subtitle="Colour = model with the largest blend weight · size = how dominant it is · hover for all weights">
-              {!d ? <SkeletonCard lines={0} height={420} /> : (
-                <IndiaMap points={points} ariaLabel="Map of the dominant forecast model per city"
-                  legend={LIVE_MODELS.map((m) => <span key={m.key}><i style={{ background: m.color }} />{m.label} ({m.kind})</span>)} />
+            <DashboardCard title="Regional weight map" icon="map"
+              subtitle="Colour = the model the blend trusts most in each region; stronger colour = larger weight. Learned at the tracked cities, spread by distance.">
+              {!g ? <SkeletonCard lines={0} height={440} /> : (
+                <IndiaGridMap grid={g} boundary={boundary.data} variable={variable} day={Math.min(day, g.dates.length - 1)} layer="model"
+                  cities={d?.cities || []} showOfficial={false} onCity={(c) => navigate(placeUrl(c.place))} />
               )}
             </DashboardCard>
 

@@ -1,166 +1,151 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { useApi } from "../api";
 import DashboardCard from "../components/DashboardCard";
-import IndiaMap from "../components/IndiaMap";
-import { AnimatedNumber, Bar, Page, Rise, SkeletonCard, Stagger } from "../components/Motion";
+import DayScrubber from "../components/DayScrubber";
+import IndiaGridMap from "../components/IndiaGridMap";
+import { Page, Rise, SkeletonCard, Stagger } from "../components/Motion";
+import OfficialAlerts from "../components/OfficialAlerts";
 import PageHeader, { SourceBadge } from "../components/PageHeader";
+import SearchBox from "../components/SearchBox";
 import VariableTabs from "../components/VariableTabs";
-import { LIVE_MODEL_BY_KEY, VARIABLES, ago, fmt, fmtDate, pct, placeUrl, severityOf } from "../format";
-import { SUMMARY_LABELS, SUMMARY_UNITS, binScale, useCities } from "../live";
+import { HAZARD_ICON, LEVEL_STYLE, LIVE_MODELS, ago, fmt, pct, placeUrl } from "../format";
+import { useCities } from "../live";
+
+const LAYERS = [
+  { key: "forecast", label: "Blended forecast", icon: "layers" },
+  { key: "model", label: "Most-trusted model", icon: "tune" },
+];
 
 function OverviewPage() {
   const [variable, setVariable] = useState("precipitation_mm");
-  const cities = useCities();
+  const [layer, setLayer] = useState("forecast");
+  const [day, setDay] = useState(0);
+  const setDayCb = useCallback((d) => setDay(d), []);
   const navigate = useNavigate();
-  const d = cities.data;
-  const ready = (d?.cities || []).filter((c) => c.status === "ready");
-  const scale = binScale(ready.map((c) => c.summary.next_24h[variable]));
-  const unit = SUMMARY_UNITS[variable];
-  const digits = 1;
-
-  const points = (d?.cities || []).filter((c) => c.place).map((c) => {
-    const value = c.summary?.next_24h[variable];
-    const alerts = c.summary?.alerts.filter((a) => a.target_variable === variable) || [];
-    return {
-      id: c.label, latitude: c.place.latitude, longitude: c.place.longitude,
-      color: c.status === "ready" ? scale.color(value) : "#e2e8f0", radius: c.status === "ready" ? 9 : 5,
-      ring: alerts.length ? "#d03b3b" : null,
-      label: `${c.name}, ${c.state}`,
-      detail: c.status === "ready" ? `${fmt(value, digits)} ${unit} · ${SUMMARY_LABELS[variable]}${alerts.length ? ` · extreme day ahead (${alerts.map((a) => fmtDate(a.date)).join(", ")})` : ""}` : c.status === "error" ? "Data unavailable" : "Computing…",
-      onClick: c.status === "ready" ? () => navigate(placeUrl({ ...c.place })) : undefined,
-    };
-  });
-
-  const alerts = ready
-    .flatMap((c) => c.summary.alerts.map((a) => ({ ...a, city: c })))
-    .sort((a, b) => (b.probability ?? 0) - (a.probability ?? 0) || a.date.localeCompare(b.date));
-
-  const dataAge = ready.length ? ready.map((c) => c.summary.fetched_at).sort()[0] : null;
+  const cities = useCities();
+  const grid = useApi("/live/grid", { pollMs: 6000, poll: (g) => g.status !== "ready" });
+  const boundary = useApi("/live/boundary");
+  const official = useApi("/live/official-alerts");
+  const g = grid.data?.status === "ready" ? grid.data : null;
+  const ready = (cities.data?.cities || []).filter((c) => c.status === "ready");
+  const hazards = ready
+    .flatMap((c) => c.summary.alerts.filter((a) => a.level !== "notice").map((a) => ({ ...a, city: c })))
+    .sort((a, b) => (a.level === b.level ? (b.probability ?? 1) - (a.probability ?? 1) : a.level === "warning" ? -1 : 1));
 
   return (
     <>
-      <PageHeader eyebrow="LIVE / INDIA" title="Adaptive forecast blend"
-        badge={<SourceBadge kind="live" detail={d ? `${d.ready}/${d.total} cities${dataAge ? " · fetched " + ago(dataAge) : ""}` : "connecting"} />} />
+      <PageHeader eyebrow="LIVE · INDIA" title="India weather, blended from 5 models" search={false}
+        badge={<SourceBadge kind="live" detail={g ? `grid ${ago(g.fetched_at)}` : cities.data ? `${cities.data.ready}/${cities.data.total} cities` : "connecting"} />} />
       <Page>
         {cities.error && <div className="banner banner--error" role="alert"><span className="material-symbols-outlined" aria-hidden="true">cloud_off</span><div><strong>Can’t reach the WEAVE API.</strong> {cities.error.message}</div></div>}
 
-        <div className="page-intro">
-          <div>
-            <span className="eyebrow">ECMWF IFS · NCEP GFS · DWD ICON · ECMWF AIFS → ONE ADAPTIVE BLEND</span>
-            <h2>{VARIABLES[variable].label} across India</h2>
+        <section className="hero">
+          <div className="hero__text">
+            <h2>One forecast, built from the best of five.</h2>
+            <p>
+              WEAVE weighs {LIVE_MODELS.map((m) => m.short).join(", ")} for every place, season, weather regime and day ahead, using how
+              each model has actually performed there against ERA5 observations.
+            </p>
           </div>
-          <VariableTabs value={variable} onChange={setVariable} />
-        </div>
-
-        {d && d.ready < d.total && (
-          <div className="progress-note" role="status">
-            <Bar value={d.ready} max={d.total} color="#4a3aa7" />
-            <span>Learning model skill for each city from its own verified forecast history: {d.ready} of {d.total} ready. Cities appear on the map as they finish.</span>
-          </div>
-        )}
+          <div className="hero__search"><SearchBox /></div>
+        </section>
 
         <div className="dashboard-grid">
           <div className="dashboard-grid__main">
-            <DashboardCard title="Live map" icon="map" subtitle={`Colour = blended ${SUMMARY_LABELS[variable]} · red ring = extreme ${VARIABLES[variable].event.toLowerCase()} day today or in the next 2 days · click a city`}
-              action={<span className="card-tag">{unit.toUpperCase()}</span>}>
-              {!d ? <SkeletonCard lines={0} height={420} /> : (
-                <IndiaMap points={points} ariaLabel={`Map of India coloured by ${SUMMARY_LABELS[variable]}`}
-                  legend={scale.bins.length > 0 && (
-                    <>
-                      {scale.bins.map((b) => <span key={b.color}><i style={{ background: b.color }} />{fmt(b.from, digits)}–{fmt(b.to, digits)}</span>)}
-                      <span><i className="ring" />extreme day ahead</span>
-                    </>
-                  )} />
-              )}
-            </DashboardCard>
-
-            <DashboardCard title="All tracked cities" icon="table_rows" subtitle="Blended values and the member each city trusts most at lead day 1" className="city-table-card">
-              {!d ? <SkeletonCard lines={6} height={0} /> : (
-                <div className="table-scroll table-scroll--tall">
-                  <table className="data-table city-table">
-                    <thead>
-                      <tr><th>City</th><th>Max temp °C</th><th>Rain mm</th><th>Max wind m/s</th><th>Most trusted ({VARIABLES[variable].label.toLowerCase()})</th><th /></tr>
-                    </thead>
-                    <tbody>
-                      {d.cities.map((c) => {
-                        const s = c.summary;
-                        const dom = s?.dominant[variable]?.["1"];
-                        return (
-                          <tr key={c.label}>
-                            <td>
-                              {c.place && c.status === "ready" ? <Link to={placeUrl(c.place)}>{c.name}</Link> : c.name}
-                              <small className="muted"> {c.state}</small>
-                            </td>
-                            {c.status === "ready" ? (
-                              <>
-                                <td>{fmt(s.next_24h.temperature_2m_c, 1)}</td>
-                                <td>{fmt(s.next_24h.precipitation_mm, 1)}</td>
-                                <td>{fmt(s.next_24h.wind_speed_10m, 1)}</td>
-                                <td>{dom ? <span className="model-chip"><i style={{ background: LIVE_MODEL_BY_KEY[dom.model].color }} />{LIVE_MODEL_BY_KEY[dom.model].label} {pct(dom.weight)}</span> : "—"}</td>
-                                <td>{s.alerts.length > 0 && <span className="material-symbols-outlined alert-dot" title="Extreme day in the next 3 days">warning</span>}</td>
-                              </>
-                            ) : (
-                              <td colSpan={5} className="muted">{c.status === "error" ? `Unavailable: ${c.error}` : "Computing…"}</td>
-                            )}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+            <DashboardCard title={layer === "forecast" ? "Forecast map" : "Model weight map"} icon="map"
+              subtitle={layer === "forecast"
+                ? "Blended daily totals / maxima on a 1.5° grid. Rain in IMD categories."
+                : "Which model the blend leans on most, region by region. Weights come from the nearest verified cities."}
+              action={<div className="segmented segmented--tight" role="tablist" aria-label="Map layer">
+                {LAYERS.map((l) => (
+                  <button key={l.key} type="button" role="tab" aria-selected={layer === l.key} className={layer === l.key ? "is-active" : ""} onClick={() => setLayer(l.key)}>
+                    <span className="material-symbols-outlined" aria-hidden="true">{l.icon}</span>{l.label}
+                  </button>
+                ))}
+              </div>}>
+              <div className="map-controls">
+                <VariableTabs value={variable} onChange={setVariable} />
+                {g && <DayScrubber dates={g.dates} value={day} onChange={setDayCb} />}
+              </div>
+              {!g ? (
+                <div className="map-building">
+                  <SkeletonCard lines={0} height={440} />
+                  <p className="progress-note" role="status">
+                    <span className="material-symbols-outlined spin" aria-hidden="true">progress_activity</span>
+                    Building the India grid: fetching 5 models for 124 grid points and learning regional weights
+                    {cities.data ? ` (${cities.data.ready}/${cities.data.total} reference cities ready)` : ""}.
+                  </p>
                 </div>
-              )}
-            </DashboardCard>
-          </div>
-
-          <aside className="dashboard-grid__side">
-            <DashboardCard title="Extreme days · next 3 days" icon="warning" className="alert-card"
-              subtitle="Blended daily max temperature / rain total / max wind at or above that city’s 95th percentile for the date">
-              {!d ? <SkeletonCard lines={3} height={60} /> : alerts.length === 0 ? (
-                <div className="alert-empty"><span className="material-symbols-outlined" aria-hidden="true">check_circle</span>No extreme days ahead in the {ready.length} cities computed so far.</div>
               ) : (
-                <Stagger as="ul" className="alert-list">
-                  {alerts.slice(0, 12).map((a) => {
-                    const v = VARIABLES[a.target_variable];
-                    const sev = severityOf(a.probability ?? 0);
-                    const u = a.target_variable === "precipitation_mm" ? "mm" : v.unit;
+                <IndiaGridMap grid={g} boundary={boundary.data} variable={variable} day={day} layer={layer}
+                  cities={cities.data?.cities || []} official={official.data?.alerts || []}
+                  onCity={(c) => navigate(placeUrl(c.place))} />
+              )}
+              {g && <p className="card-caption">{g.note} Weights learned at {g.weight_sources.length} cities. Click a city for its full forecast.</p>}
+            </DashboardCard>
+
+            <DashboardCard title="Cities today" icon="location_city" subtitle="Plain-language forecast for each tracked city · click for the full week">
+              {!cities.data ? <SkeletonCard lines={4} height={0} /> : (
+                <Stagger className="city-cards">
+                  {cities.data.cities.map((c) => {
+                    const today = c.summary?.outlook?.[0];
+                    const warn = c.summary?.alerts?.find((a) => a.level !== "notice");
                     return (
-                      <Rise as="li" key={a.city.label + a.target_variable} className={"alert-item alert-item--" + sev}>
-                        <button type="button" onClick={() => navigate(placeUrl(a.city.place))}>
-                          <span className="alert-item__head">
-                            <span className="alert-card__severity">{sev.toUpperCase()}</span>
-                            <span className="alert-card__probability">{pct(a.probability)} of weighted models agree</span>
-                          </span>
-                          <strong>{v.event} · {a.city.name}</strong>
-                          <span className="alert-item__detail">
-                            {fmtDate(a.date)}{!a.complete && ` (from ${a.first_hour_ist} IST)`} · blend {fmt(a.value, 1)} {u} vs p95 {fmt(a.threshold, 1)} {u}
-                          </span>
-                        </button>
+                      <Rise key={c.label}>
+                        {c.status === "ready" && today ? (
+                          <Link to={placeUrl(c.place)} className={"city-card" + (warn ? " has-warning" : "")}>
+                            <span className="city-card__name">{c.name}<small>{c.state}</small></span>
+                            <span className="material-symbols-outlined city-card__icon" aria-hidden="true">{today.icon}</span>
+                            <span className="city-card__temp">{fmt(today.high, 0)}°<small>/{fmt(today.low, 0)}°</small></span>
+                            <span className="city-card__words">{today.headline}</span>
+                            {today.rain_chance != null && <span className="city-card__rain">{pct(today.rain_chance)} rain</span>}
+                            {warn && <span className="city-card__warn"><span className="material-symbols-outlined" aria-hidden="true">{HAZARD_ICON[warn.type]}</span>{warn.label}</span>}
+                          </Link>
+                        ) : (
+                          <div className="city-card is-pending">
+                            <span className="city-card__name">{c.name}<small>{c.state}</small></span>
+                            <span className="muted">{c.status === "error" ? "Unavailable" : "Learning model skill…"}</span>
+                          </div>
+                        )}
                       </Rise>
                     );
                   })}
                 </Stagger>
               )}
             </DashboardCard>
+          </div>
 
-            <DashboardCard title="How this works" icon="hub" subtitle="Every number here is computed, never estimated by hand">
-              <ol className="workflow-stages">
-                <li>Fetch the latest runs of 3 NWP models and 1 AI model</li>
-                <li>Score each model’s archived forecasts against ERA5 at this city</li>
-                <li>Pick and fit the best weighting on held-out days</li>
-                <li>Blend, then flag days above the local 95th percentile for the date</li>
-              </ol>
-              <p className="card-caption"><Link to="/about">Method, data sources and limitations →</Link></p>
+          <aside className="dashboard-grid__side">
+            <DashboardCard title="Official warnings" icon="campaign" className="official-card"
+              subtitle={official.data ? `NDMA SACHET · IMD, CWC and state authorities · updated ${ago(official.data.fetched_at)}` : "NDMA SACHET"}
+              action={official.data && <span className="card-tag">{official.data.alerts.length} ACTIVE</span>}>
+              {official.error ? <p className="muted">Official feed unavailable right now.</p>
+                : !official.data ? <SkeletonCard lines={3} height={0} />
+                  : <OfficialAlerts alerts={official.data.alerts} limit={6} />}
             </DashboardCard>
 
-            {ready.length > 0 && (
-              <DashboardCard title="Snapshot" icon="insights" subtitle={`Over ${ready.length} cities`}>
-                <dl className="kv-list kv-list--big">
-                  <div><dt>Wettest next 24 h</dt><dd>{(() => { const c = [...ready].sort((a, b) => b.summary.next_24h.precipitation_mm - a.summary.next_24h.precipitation_mm)[0]; return <>{c.name} · <AnimatedNumber value={c.summary.next_24h.precipitation_mm} digits={1} /> mm</>; })()}</dd></div>
-                  <div><dt>Hottest next 24 h</dt><dd>{(() => { const c = [...ready].sort((a, b) => b.summary.next_24h.temperature_2m_c - a.summary.next_24h.temperature_2m_c)[0]; return <>{c.name} · <AnimatedNumber value={c.summary.next_24h.temperature_2m_c} digits={1} /> °C</>; })()}</dd></div>
-                  <div><dt>Windiest next 24 h</dt><dd>{(() => { const c = [...ready].sort((a, b) => b.summary.next_24h.wind_speed_10m - a.summary.next_24h.wind_speed_10m)[0]; return <>{c.name} · <AnimatedNumber value={c.summary.next_24h.wind_speed_10m} digits={1} /> m/s</>; })()}</dd></div>
-                </dl>
-              </DashboardCard>
-            )}
+            <DashboardCard title="WEAVE hazard outlook" icon="crisis_alert" className="alert-card"
+              subtitle="Heat wave, heavy rain or high wind in the next 3 days: IMD-style rules on the blend, plus the 51-member ensemble">
+              {!cities.data ? <SkeletonCard lines={3} height={0} /> : hazards.length === 0 ? (
+                <div className="alert-empty"><span className="material-symbols-outlined" aria-hidden="true">check_circle</span>No heat-wave, heavy-rain or high-wind signals across {ready.length} cities.</div>
+              ) : (
+                <ul className="alert-list">
+                  {hazards.slice(0, 8).map((h) => (
+                    <li key={h.city.label + h.type + h.date} className={"alert-item alert-item--" + (h.level === "warning" ? "high" : "moderate")}>
+                      <button type="button" onClick={() => navigate(placeUrl(h.city.place))}>
+                        <span className="alert-item__head">
+                          <span className="alert-card__severity" style={{ color: LEVEL_STYLE[h.level].color }}>{LEVEL_STYLE[h.level].label.toUpperCase()}</span>
+                          <span className="alert-card__probability">{h.day_label}</span>
+                        </span>
+                        <strong>{h.label} · {h.city.name}</strong>
+                        <span className="alert-item__detail">{h.sentence}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </DashboardCard>
           </aside>
         </div>
       </Page>

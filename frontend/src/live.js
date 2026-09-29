@@ -6,7 +6,7 @@ export function useCities() {
 }
 
 export function useLiveForecast(place) {
-  return useApi(place ? "/live/forecast" + qs({ name: place.name, lat: place.latitude, lon: place.longitude }) : null);
+  return useApi(place ? "/live/forecast" + qs({ name: place.name, lat: place.latitude, lon: place.longitude, state: place.state }) : null);
 }
 
 /** Place from the URL query (?name&lat&lon&state), or null. */
