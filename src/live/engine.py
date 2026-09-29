@@ -42,7 +42,7 @@ import pandas as pd
 from src.blending.operational import CONFIGS, METHODS, blend_rows, forecast_columns, skill_table
 from src.data_pipeline.config import MONTH_TO_SEASON
 from src.evaluation.extreme_events import event_metrics
-from src.live import openmeteo
+from src.live import openmeteo, outlook
 from src.live.openmeteo import LIVE_MODELS, MODEL_KEYS, VARIABLES
 from src.regime.classifier import classify, training_thresholds
 
@@ -101,6 +101,11 @@ def daily_thresholds(clim: pd.DataFrame) -> pd.DataFrame:
                     v = all_wet.to_numpy()
             col.append(float(np.quantile(v, 0.95)) if len(v) else np.nan)
         out[var] = col
+    # Normal daily max temperature for the date (heat-wave departure).
+    tmax = clim["temperature_2m_c"].to_numpy()
+    out["temperature_normal"] = [
+        float(tmax[np.minimum(np.abs(doy - d), 366 - np.abs(doy - d)) <= WINDOW_DAYS].mean()) for d in out["doy"]
+    ]
     return pd.DataFrame(out)
 
 
@@ -255,12 +260,19 @@ def live_forecast(name: str, lat: float, lon: float) -> dict:
     state = skill_state(name, lat, lon)
     thresholds, groups = state["thresholds"], state["groups"]
 
-    (fc,), fetched_at = openmeteo.forecast([(lat, lon)])
+    (res,), fetched_at = openmeteo.forecast([(lat, lon)])
+    fc = res["members"]
     fc = fc[fc["timestamp"] >= now].copy()
     hours = (fc["timestamp"] - now) / pd.Timedelta(hours=1)
     fc["lead_time_hours"] = 24 * np.minimum(hours // 24, 7).astype(int)
     fc["hours_ahead"] = hours.astype(int)
     fc = _add_context(fc, name, state["regime_thresholds"], forecast_columns(MODEL_KEYS))
+
+    hills = (res.get("elevation") or 0) >= outlook.HILLS_ELEVATION_M
+    try:
+        ens, _ = openmeteo.ensemble_daily(lat, lon)
+    except openmeteo.OpenMeteoError:
+        ens = None  # probabilities are omitted rather than guessed
 
     variables = {}
     for var in VARIABLES:
@@ -289,7 +301,7 @@ def live_forecast(name: str, lat: float, lon: float) -> dict:
         blended = pd.concat(rows, ignore_index=True).sort_values("timestamp").reset_index(drop=True)
         variables[var] = {
             "points": _points(blended),
-            "days": _days(blended, thresholds, var),
+            "days": _days(blended, thresholds, var, ens, hills),
             "chosen": chosen,
             "skill": skill,
             "event_verification": verification,
@@ -310,6 +322,9 @@ def live_forecast(name: str, lat: float, lon: float) -> dict:
         "event_definition": {"window_days": WINDOW_DAYS, "climate_days": CLIMATE_DAYS, "percentile": 95,
                              "wet_day_mm": WET_DAY_MM, "daily_aggregate": DAILY_AGG, "day_boundary": "IST"},
         "variables": variables,
+        "outlook": _outlook(variables, res["cloud"], hills),
+        "elevation_m": res.get("elevation"),
+        "ensemble_members": int(ens["member"].nunique()) if ens is not None else None,
         "compute_seconds": round(time.time() - t0, 2),
     }
 
@@ -329,16 +344,38 @@ def _points(b: pd.DataFrame) -> list[dict]:
     return out
 
 
-def _days(b: pd.DataFrame, thresholds: pd.DataFrame, var: str) -> list[dict]:
+def _ensemble_stats(ens: pd.DataFrame | None, date: pd.Timestamp, var: str, thr: float, normal: float | None, hills: bool) -> dict | None:
+    """Fractions of the 51 ECMWF ensemble members crossing each threshold."""
+    if ens is None:
+        return None
+    v = ens.loc[(ens["date"] == date) & (ens["variable"] == var), "value"].to_numpy()
+    if not len(v):
+        return None
+    out = {"members": len(v), "p10": float(np.quantile(v, 0.1)), "p50": float(np.median(v)), "p90": float(np.quantile(v, 0.9)),
+           "above_local_p95": float(np.mean(v >= thr)) if np.isfinite(thr) else None}
+    if var == "precipitation_mm":
+        out["wet"] = float(np.mean(v >= 1.0))
+        out["heavy"] = float(np.mean(v >= 64.5))
+    elif var == "temperature_2m_c":
+        out["heat_wave"] = float(np.mean([outlook.heat_wave(x, normal, hills) is not None for x in v]))
+    else:
+        out["high_wind"] = float(np.mean(v * 3.6 >= outlook.HIGH_WIND_KMH))
+    return out
+
+
+def _days(b: pd.DataFrame, thresholds: pd.DataFrame, var: str, ens: pd.DataFrame | None = None, hills: bool = False) -> list[dict]:
     """Per IST day: blended and member daily aggregates, the day-of-year
-    threshold, event flag and skill-weighted member agreement."""
+    threshold, event flag, skill-weighted member agreement and ensemble
+    probabilities."""
     agg = DAILY_AGG[var]
     b = b.assign(date=_ist_date(b["timestamp"]))
     for m in MODEL_KEYS:
         b[f"corr_{m}"] = b[f"{m}_forecast"] - b[f"bias_{m}"]
+    normals = thresholds.set_index("doy")["temperature_normal"]
     out = []
     for date, g in b.groupby("date", sort=True):
         thr = float(_threshold_for(pd.Series([date]), thresholds, var)[0])
+        normal = float(normals.get(date.dayofyear, np.nan))
         blended = float(getattr(g["blended"], agg)())
         members, weights = {}, {}
         for m in MODEL_KEYS:
@@ -348,12 +385,74 @@ def _days(b: pd.DataFrame, thresholds: pd.DataFrame, var: str) -> list[dict]:
         agree = [m for m, v in members.items() if v is not None and weights[m] > 0]
         wsum = sum(weights[m] for m in agree)
         prob = sum(weights[m] for m in agree if members[m] >= thr) / wsum if wsum else None
-        out.append({
+        day = {
             "date": date.date().isoformat(), "hours": len(g), "complete": len(g) == 24,
             "first_hour_ist": (g["timestamp"].min() + IST).strftime("%H:%M"),
             "blended": _num(blended), "members": {m: _num(v) for m, v in members.items()},
             "threshold": _num(thr), "event": bool(np.isfinite(thr) and blended >= thr), "probability": _num(prob),
-        })
+            "ensemble": _ensemble_stats(ens, date, var, thr, normal, hills),
+        }
+        if var == "temperature_2m_c":
+            day["low"] = _num(g["blended"].min())
+            day["normal"] = _num(normal)
+        out.append(day)
+    return out
+
+
+HAZARD_TEXT = {
+    "heavy_rain": ("Heavy rain", "IMD heavy-rain threshold (64.5 mm/day)"),
+    "heat_wave": ("Heat wave", "IMD-style heat-wave criteria"),
+    "high_wind": ("High wind", "strong winds (Beaufort 6+, 39 km/h)"),
+}
+WATCH_PROBABILITY = 0.3
+
+
+def _outlook(variables: dict, cloud: pd.DataFrame, hills: bool) -> list[dict]:
+    """One plain-language entry per IST day, built from the blended daily
+    values, ensemble probabilities and IMD-style hazard rules."""
+    temp, rain, wind = (variables[v]["days"] for v in ("temperature_2m_c", "precipitation_mm", "wind_speed_10m"))
+    cloud = cloud.assign(date=_ist_date(cloud["timestamp"]), hour=(cloud["timestamp"] + IST).dt.hour)
+    daytime = cloud[(cloud["hour"] >= 6) & (cloud["hour"] < 18)].groupby("date")["cloud_cover"].mean()
+    today = _ist_date(pd.Series([_utc_now()])).iloc[0]
+    out = []
+    for i, (t, r, w) in enumerate(zip(temp, rain, wind)):
+        date = pd.Timestamp(t["date"])
+        if i > 0 and t["hours"] < 12:  # a sliver of a day at the forecast's end: aggregates would mislead
+            continue
+        label = "Today" if date == today else "Tomorrow" if date == today + pd.Timedelta(days=1) else date.strftime("%A")
+        hazards = []
+
+        def add(kind, blended_hit, p_ens, detail):
+            name, rule = HAZARD_TEXT[kind]
+            if blended_hit:
+                level, lead = "warning", f"{name} expected by the blended forecast ({rule})."
+            elif p_ens is not None and p_ens >= WATCH_PROBABILITY:
+                level, lead = "watch", f"{name} possible: {round(p_ens * 100)}% of ensemble members meet the {rule}."
+            else:
+                return
+            hazards.append({"type": kind, "level": level, "label": name, "probability": p_ens, "sentence": lead + detail})
+
+        te, re, we = t.get("ensemble") or {}, r.get("ensemble") or {}, w.get("ensemble") or {}
+        hw = outlook.heat_wave(t["blended"], t.get("normal"), hills)
+        dep = f" Normal max for the date is {t['normal']:.0f}°C." if t.get("normal") is not None else ""
+        add("heat_wave", hw is not None, te.get("heat_wave"), dep)
+        add("heavy_rain", (r["blended"] or 0) >= 64.5, re.get("heavy"), "")
+        add("high_wind", (w["blended"] or 0) * 3.6 >= outlook.HIGH_WIND_KMH, we.get("high_wind"), "")
+        for kind, d, word in (("heat_wave", t, "hot"), ("heavy_rain", r, "wet"), ("high_wind", w, "windy")):
+            if d["event"] and not any(h["type"] == kind for h in hazards):
+                hazards.append({"type": kind, "level": "notice", "label": f"Unusually {word}", "probability": d["probability"],
+                                "sentence": f"Unusually {word} for this place and time of year (above its 95th percentile)."})
+
+        entry = {
+            "date": t["date"], "label": label, "complete": t["complete"], "first_hour_ist": t["first_hour_ist"],
+            "high": t["blended"], "low": t.get("low"), "normal_high": t.get("normal"),
+            "rain_mm": r["blended"], "rain_chance": re.get("wet"), "rain_range": [re.get("p10"), re.get("p90")] if re else None,
+            "wind_kmh": _num((w["blended"] or 0) * 3.6), "cloud": _num(daytime.get(date)),
+            "temp_range": [te.get("p10"), te.get("p90")] if te else None,
+            "hazards": hazards, "heat_wave_class": hw, "rain_category": outlook.rain_category(r["blended"]),
+        }
+        entry.update(outlook.describe_day(entry))
+        out.append(entry)
     return out
 
 
