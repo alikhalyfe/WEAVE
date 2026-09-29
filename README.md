@@ -119,7 +119,11 @@ cd frontend && npm install && npm run dev         # open http://localhost:5173 (
 
 1. **Render:** New → Blueprint → this repo (`render.yaml`). `https://weave-eosin-three.vercel.app` (and its previews) is allowed by default; add other frontend URLs to `ALLOWED_ORIGINS`.
 2. **Vercel:** import with root directory `frontend`, and set `VITE_API_BASE=https://<render-service>.onrender.com`.
-3. **Cold starts:** the free Render tier sleeps. The first visit wakes it (about 30–60 s) and the refresher then warms the 24 cities and the grid.
+3. **Staying awake:** Render's free tier sleeps after about 15 minutes without incoming traffic, and waking means relearning every city and rebuilding the map.
+   - **Self-ping:** the API pings its own public `/api/health` every 10 minutes, using `RENDER_EXTERNAL_URL`, which Render sets automatically. It never runs locally.
+   - **Monthly hours:** one always-on free service uses about 744 of Render's 750 free instance hours a month.
+   - **Turning it off:** set `WEAVE_KEEPALIVE=0`.
+   - **After a deploy or restart:** the cache is empty, so the first map build still takes a few minutes.
 
 **Fair use.** Open-Meteo's free tier is non-commercial, with a budget of 600 units per minute, 5,000 per hour and 10,000 per day. WEAVE weighs every request with Open-Meteo's own formula, waits out the per-minute limit, and refuses cleanly before the hourly or daily limit. A steady day uses roughly 6,000 units.
 

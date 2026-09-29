@@ -10,9 +10,12 @@ the dashboard stays current without anyone running a script.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+
+import httpx
 
 from src.live import alerts, cities, engine, grid, openmeteo
 
@@ -186,6 +189,45 @@ def start_refresher() -> None:
     threading.Thread(target=_refresh_loop, name="weave-refresher", daemon=True).start()
 
 
+# ---- Keep-alive (Render free tier) ----
+# Render's free web services sleep after ~15 min with no *incoming* HTTP
+# traffic, and waking means re-learning every city and rebuilding the map.
+# Pinging our own public URL goes out and back in through Render's proxy,
+# which counts as incoming traffic. Render sets RENDER_EXTERNAL_URL itself;
+# elsewhere (local dev, tests) there is no URL, so nothing is pinged.
+KEEPALIVE_SECONDS = 10 * 60
+_keepalive = {"url": None, "started": None, "pings": 0, "last_ping": None, "last_status": None, "last_error": None}
+
+
+def keepalive_url() -> str | None:
+    if os.environ.get("WEAVE_KEEPALIVE", "1") == "0":
+        return None
+    base = os.environ.get("KEEPALIVE_URL") or os.environ.get("RENDER_EXTERNAL_URL")
+    return base.rstrip("/") + "/api/health" if base else None
+
+
+def _keepalive_loop(url: str) -> None:
+    with httpx.Client(timeout=30) as client:
+        while True:
+            time.sleep(KEEPALIVE_SECONDS)
+            try:
+                res = client.get(url)
+                _keepalive.update(pings=_keepalive["pings"] + 1, last_ping=time.time(), last_status=res.status_code, last_error=None)
+            except httpx.HTTPError as exc:  # a failed ping is retried next cycle
+                _keepalive.update(last_ping=time.time(), last_error=str(exc))
+
+
+def start_keepalive() -> bool:
+    """Idempotent: starts the self-ping thread once, if a public URL is known."""
+    url = keepalive_url()
+    with _lock:
+        if not url or _keepalive["started"]:
+            return False
+        _keepalive.update(url=url, started=time.time())
+    threading.Thread(target=_keepalive_loop, args=(url,), name="weave-keepalive", daemon=True).start()
+    return True
+
+
 def status() -> dict:
     """Operational status for the Operations page."""
     now = time.time()
@@ -200,6 +242,7 @@ def status() -> dict:
     except Exception as exc:
         sachet_info = {"error": str(exc)}
     return {
+        "keepalive": {**_keepalive, "interval_seconds": KEEPALIVE_SECONDS},
         "refresher": {**_refresher, "interval_seconds": REFRESH_SECONDS,
                       "next_run_in_seconds": max(0, round(REFRESH_SECONDS - (now - _refresher["last_run"]))) if _refresher["last_run"] else None},
         "budget": {"used": used, "limits": {"minute": openmeteo.BUDGET[60], "hour": openmeteo.BUDGET[3600], "day": openmeteo.BUDGET[86400]},

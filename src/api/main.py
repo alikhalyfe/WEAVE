@@ -58,6 +58,7 @@ async def lifespan(_app):
     # The operational workflow: keep tracked cities and the India grid fresh.
     if os.environ.get("WEAVE_BACKGROUND", "1") != "0":
         service.start_refresher()
+        service.start_keepalive()  # only pings when deployed (RENDER_EXTERNAL_URL is set)
     yield
 
 

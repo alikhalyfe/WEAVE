@@ -300,3 +300,15 @@ def test_city_resolution_never_crosses_states():
     from src.live import cities
     assert cities.resolve("Pune", "Maharashtra")["state"] == "Maharashtra"
     assert cities.resolve("Pune", "Goa") is None  # only a Maharashtra match exists: refuse, don't guess
+
+
+def test_keepalive_targets_render_url_and_stays_off_locally(monkeypatch):
+    monkeypatch.delenv("RENDER_EXTERNAL_URL", raising=False)
+    monkeypatch.delenv("KEEPALIVE_URL", raising=False)
+    assert service.keepalive_url() is None  # local dev / tests: never ping
+
+    monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://weave-api.onrender.com/")
+    assert service.keepalive_url() == "https://weave-api.onrender.com/api/health"
+
+    monkeypatch.setenv("WEAVE_KEEPALIVE", "0")
+    assert service.keepalive_url() is None
