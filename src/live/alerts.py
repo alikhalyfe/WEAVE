@@ -54,6 +54,7 @@ def _normalise(a: dict) -> dict | None:
         "area": a.get("area_description"),
         "message": a.get("warning_message"),
         "source": a.get("alert_source"),
+        "language": (a.get("actual_lang") or "en").lower(),
         "starts": start.isoformat() if start else None,
         "ends": end.isoformat() if end else None,
         "latitude": lat,
